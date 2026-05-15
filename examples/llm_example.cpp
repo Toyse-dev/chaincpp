@@ -92,8 +92,8 @@ int main() {
             };
             
             auto qa_response = llm->generate(qa_messages, ModelConfig{
-                .max_tokens = 200,
-                .temperature = 0.5f  // Added 'f' to clarify float type
+                .temperature = 0.5f, // Added 'f' to clarify float type
+                .max_tokens = 200
             });
             
             if (qa_response.is_ok()) {
