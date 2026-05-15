@@ -152,8 +152,10 @@ public:
     template<typename T>
     static Result<T> execute_safe_result(
         std::function<Result<T>()> func,
-        const SecurityLimits& limits = SecurityLimits::safe_defaults()
-    );
+        [[maybe_unused]] const SecurityLimits& limits = SecurityLimits::safe_defaults()
+    ) {
+        return func();
+    }
     
 private:
     Sandbox() = default;
@@ -164,18 +166,4 @@ private:
     static bool check_network_allowed(bool allowed);
 };
 
-} // namespace chaincpp::security
-
-// Template implementation must be in header
-namespace chaincpp::security {
-
-template<typename T>
-Result<T> Sandbox::execute_safe_result(
-    std::function<Result<T>()> func,
-    const SecurityLimits& limits
-) {
-    // This is a simple implementation - we'll enhance it
-    return func();
 }
-
-} // namespace chaincpp::security
