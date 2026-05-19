@@ -108,28 +108,46 @@ bool OutputSanitizer::has_dangerous_patterns(std::string_view input) {
     return false;
 }
 
-// ============================================================================
 // InjectionDetector Implementation
-// ============================================================================
 
-const std::vector<std::pair<std::regex, std::pair<std::string, int>>>& 
+const std::vector<std::pair<std::string, std::pair<std::string, int>>>& 
 InjectionDetector::get_patterns() {
-    static const std::vector<std::pair<std::regex, std::pair<std::string, int>>> patterns = {
+    static const std::vector<std::pair<std::string, std::pair<std::string, int>>> patterns = {
         // Critical severity (8-10)
-        {std::regex(R"(ignore (all|previous) instructions)", std::regex::icase), {"Ignore instructions", 9}},
-        {std::regex(R"(system prompt|developer mode)", std::regex::icase), {"System prompt override", 10}},
-        {std::regex(R"(you are now|pretend you are|act as)", std::regex::icase), {"Role manipulation", 8}},
-        {std::regex(R"(DAN|jailbreak|do anything now)", std::regex::icase), {"Jailbreak attempt", 10}},
+        {"dan", {"Jailbreak attempt", 10}},
+        {"jailbreak", {"Jailbreak attempt", 10}},
+        {"do anything now", {"Jailbreak attempt", 10}},
+        {"system prompt", {"System prompt override", 10}},
+        {"developer mode", {"System prompt override", 10}},
+
+
+        {"ignore all previous instructions", {"Ignore instructions", 9}},
+        {"ignore all instructions", {"Ignore instructions", 9}},
+        {"ignore instructions", {"Ignore instructions", 9}},
+        {"ignore instructions", {"Ignore instructions", 9}},
+        {"you are now", {"Role manipulation", 8}},
+        {"pretend you are", {"Role manipulation", 8}},
+        {"act as", {"Role manipulation", 8}},
         
         // High severity (5-7)
-        {std::regex(R"(forget your|ignore your|bypass your)", std::regex::icase), {"Instruction bypass", 7}},
-        {std::regex(R"(no filters|no restrictions|uncensored)", std::regex::icase), {"Filter bypass", 7}},
-        {std::regex(R"(output (password|key|secret|token))", std::regex::icase), {"Secret extraction", 8}},
+        {"forget your", {"Instruction bypass", 7}},
+        {"ignore your", {"Instruction bypass", 7}},
+        {"bypass your", {"Instruction bypass", 7}},
+        {"no filters", {"Filter bypass", 7}},
+        {"no restrictions", {"Filter bypass", 7}},
+        {"uncensored", {"Filter bypass", 7}},
+        {"output password", {"Secret extraction", 8}},
+        {"output key", {"Secret extraction", 8}},
+        {"output secret", {"Secret extraction", 8}},
+        {"output token", {"Secret extraction", 8}},
         
         // Medium severity (3-4)
-        {std::regex(R"(repeat (after me|this text|the word))", std::regex::icase), {"Prompt repetition", 4}},
-        {std::regex(R"(what (is|are) your (instructions|prompt|system message))", std::regex::icase), {"Prompt leaking", 5}},
-        {std::regex(R"(translate this|summarize this|explain this)", std::regex::icase), {"Context switching", 3}}
+        {"repeat after me", {"Prompt repetition", 4}},
+        {"repeat this text", {"Prompt repetition", 4}},
+        {"repeat the word", {"Prompt repetition", 4}},
+        {"what is your instructions", {"Prompt leaking", 5}},
+        {"what is your prompt", {"Prompt leaking", 5}},
+        {"what is your system message", {"Prompt leaking", 5}}
     };
     return patterns;
 }
@@ -137,36 +155,36 @@ InjectionDetector::get_patterns() {
 InjectionDetector::DetectionResult InjectionDetector::detect(std::string_view text) {
     DetectionResult result;
     
-    // convert to string for reliable regex matching on MinGW
-    std::string text_str{text};
-
-    for (const auto& [pattern, info] : get_patterns()) {
-        // Use the string object instead of iterators
-        if (std::regex_search(text_str, pattern)) {
+    // Convert input text to lowercase to bypass MinGW's broken case-insensitive regex
+    std::string clean_text{text};
+    std::transform(clean_text.begin(), clean_text.end(), clean_text.begin(), 
+                   [](unsigned char c) { return std::tolower(c); });
+    
+    // Fast substring scanning (immune to regex engine failures)
+    for (const auto& [phrase, info] : get_patterns()) {
+        if (clean_text.find(phrase) != std::string::npos) {
             result.is_injection = true;
             result.pattern_matched = info.first;
             result.severity = info.second;
-            break; // Return first match
+            return result; 
         }
     }
 
-    // Check the character density
-    size_t special_chars = std::count_if(text_str.begin(), text_str.end(),
-        [](char c) {return std::ispunct(c) && c != '.' && c != ',' && c != '!' ;});
-
-        // Also check for encoded injections (base64, etc.)
-        if (special_chars > text_str.length() / 3) {
-            result.is_injection = true;
-            result.pattern_matched = "Unsual character density";
-            result.severity = 3;
-        }
+    // Fallback density scanning for structural characters
+    size_t special_chars = std::count_if(clean_text.begin(), clean_text.end(), 
+        [](char c) { return std::ispunct(c) && c != '.' && c != ',' && c != '!'; });
+    
+    double density = static_cast<double>(special_chars) / clean_text.length();
+    if (density > 0.15) { // Arbitrary threshold for suspicious character density
+        result.is_injection = true;
+        result.pattern_matched = "Unusual character density";
+        result.severity = 3;
+    }
     
     return result;
 }
 
-// ============================================================================
 // PromptTemplate Implementation
-// ============================================================================
 
 security::Result<PromptTemplate> PromptTemplate::create(std::string_view template_str) {
     PromptTemplate pt;
@@ -262,9 +280,7 @@ security::Result<std::string> PromptTemplate::format_safe(
     return format(variables, OutputSanitizer::Context::PLAIN);
 }
 
-// ============================================================================
 // SystemPromptGuard Implementation
-// ============================================================================
 
 std::string SystemPromptGuard::wrap_system_prompt(std::string_view system_prompt) {
     std::ostringstream wrapped;
@@ -306,4 +322,4 @@ std::string SystemPromptGuard::create_locked_prompt(std::string_view instruction
     return locked.str();
 }
 
-} // namespace chaincpp::core
+}
