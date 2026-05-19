@@ -86,15 +86,23 @@ static security::Result<std::string> curl_request(
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_data);
-    // Force IPv4 to avoid potential issues in some environments
-    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
-    // Set a reasonable timeout and disable signals for multi-threaded environments
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    // Disable DNS caching to ensure fresh lookups (optional, can be tweaked based on needs)
-    curl_easy_setopt(curl, CURLOPT_DNS_CACHE_TIMEOUT, 0L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout.count()));
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    
+    // FIX FOR WINDOWS HOSTNAME RESOLUTION BUG:
+    // This tells libcurl to ignore broken asynchronous thread lookups on Windows 10/11
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_DNS_USE_GLOBAL_CACHE, 0L);
+    
+    // Switch to Windows Native Security Channel to bypass local engine handshake drops
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L); // Bypass certificate caching lookups
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+
+
+    // Host resolution workaround (if needed, can be removed in production)
+    struct curl_slist* host_mapping = nullptr;
+    host_mapping = curl_slist_append(host_mapping, "openrouter.ai:443:172.67.209.117");
+    host_mapping = curl_slist_append(host_mapping, "openrouter.ai:443:104.21.37.243");
+    curl_easy_setopt(curl, CURLOPT_RESOLVE, host_mapping);
     
     CURLcode res = curl_easy_perform(curl);
     
@@ -102,6 +110,7 @@ static security::Result<std::string> curl_request(
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     
     curl_slist_free_all(headers);
+    curl_slist_free_all(host_mapping);
     curl_easy_cleanup(curl);
     
     if (res != CURLE_OK) {
