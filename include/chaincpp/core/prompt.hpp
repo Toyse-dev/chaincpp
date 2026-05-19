@@ -9,9 +9,7 @@
 
 namespace chaincpp::core {
 
-// ============================================================================
 // Output Sanitizer - Prevents injection attacks
-// ============================================================================
 
 class OutputSanitizer {
 public:
@@ -36,9 +34,7 @@ private:
     static std::string escape_html(std::string_view input);
 };
 
-// ============================================================================
 // Injection Detector - Identifies prompt injection attempts
-// ============================================================================
 
 class InjectionDetector {
 public:
@@ -57,12 +53,10 @@ public:
     }
     
 private:
-    static const std::vector<std::pair<std::regex, std::pair<std::string, int>>>& get_patterns();
+    static const std::vector<std::pair<std::string, std::pair<std::string, int>>>& get_patterns();
 };
 
-// ============================================================================
 // Prompt Template - Safe string interpolation
-// ============================================================================
 
 class PromptTemplate {
 public:
