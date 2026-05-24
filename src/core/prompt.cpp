@@ -123,7 +123,10 @@ InjectionDetector::get_patterns() {
 
         {"ignore all previous instructions", {"Ignore instructions", 9}},
         {"ignore all instructions", {"Ignore instructions", 9}},
-        {"ignore instructions", {"Ignore instructions", 9}},
+        {"ignore previous instructions", {"Ignore instructions", 9}},
+        {"you are now a dan", {"Jailbreak attempt", 10}},
+        {"pretend you are a dan", {"Jailbreak attempt", 10}},
+        {"act as a dan", {"Jailbreak attempt", 10}},
         {"ignore instructions", {"Ignore instructions", 9}},
         {"you are now", {"Role manipulation", 8}},
         {"pretend you are", {"Role manipulation", 8}},
