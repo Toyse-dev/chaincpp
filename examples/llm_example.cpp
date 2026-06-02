@@ -76,12 +76,67 @@ int main() {
         auto llm = std::move(openai_result.value());
         std::cout << "OpenRouter client ready\n\n";
 
+        // Auto discover working free models
+        std::cout << "Discovering available free models\n";
+        std::cout << "-------------------------------------\n";
+
+        std::vector<std::string> models_to_try = {
+            "google/gemma-2-2b-it",
+            "microsoft/phi-2",
+            "mistralai/mistral-7b-instruct",
+            "meta-llama/llama-3-8b-instruct",
+            "meta-llama/llama-3-70b-instruct",
+        };
+
         // Create a base configuration selecting a free model
         ModelConfig test_config;
         test_config.model_name = "meta-llama/llama-3-8b-instruct";
         test_config.temperature = 0.5f; // Added 'f' to clarify float type
         test_config.max_tokens = 200;
         test_config.timeout = std::chrono::seconds(60);
+
+        bool found_working_model = false;
+        std::string working_model;
+
+        const char* api_key = std::getenv("OPENROUTER_API_KEY");
+    if (!api_key || strlen(api_key) == 0) {
+        std::cout << "ERROR: OPENROUTER_API_KEY environment variable not set\n";
+        std::cout << "Please set your OpenRouter API key and try again.\n";
+        std::cout << "Get your key from: https://openrouter.ai/keys\n";
+        return 1;
+    }
+
+        for (const auto& model_name : models_to_try) {
+            test_config.model_name = model_name;
+            std::cout << "Testing model: " << model_name << " ... ";
+            std::cout.flush();
+
+            std::vector<Message> messages = {
+                Message::system("You are a helpful assistant. Be very concise."),
+                Message::user("What is the capital of France?")
+            };
+            
+            auto response = llm->generate(messages, test_config);
+            if (response.is_ok()) {
+                std::cout << "Success! Response: " << response.value() << "\n";
+                found_working_model = true;
+                working_model = model_name;
+                break;
+            } else {
+                std::cout << "Failed: " << response.error() << "\n";
+            }
+        }
+
+        if (!found_working_model) {
+            std::cout << "No free models worked. Please check your API key and network connection.\n";
+            return 1;
+        }
+
+        std::cout << "\nUsing working model: " << working_model << "\n\n";
+
+        // Update test_config with the working model
+        test_config.model_name = working_model;
+        test_config.max_tokens = 300;
         
         // Example 1: Simple chat
         std::cout << "Example 1: Simple Chat\n";
