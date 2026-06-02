@@ -393,4 +393,4 @@ size_t LocalLLM::count_tokens(const std::string& text) const {
     return text.length() / 4;
 }
 
-} // namespace chaincpp::models
+}
