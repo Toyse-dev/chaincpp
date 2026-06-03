@@ -4,6 +4,7 @@
 #include <random>
 #include <chrono>
 #include <unordered_map>
+#include <sodium.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -18,9 +19,7 @@
 
 namespace chaincpp::security {
 
-// ============================================================================
 // secure_string Implementation
-// ============================================================================
 
 secure_string::secure_string(const std::string& str) {
     size_ = str.size();
@@ -28,6 +27,13 @@ secure_string::secure_string(const std::string& str) {
     if (data_) {
         std::memcpy(data_.get(), str.c_str(), size_);
         data_.get()[size_] = '\0';
+
+        // Lock the memory to prevent swapping to disk
+        #ifdef _WIN32
+            VirtualLock(data_.get(), size_ + 1);
+        #else
+            mlock(data_.get(), size_ + 1);
+        #endif
     }
 }
 
@@ -44,7 +50,18 @@ secure_string::secure_string(const char* str) {
 
 secure_string::~secure_string() {
     zero_memory();
+    if (data_) {
+        #ifdef _WIN32
+            VirtualUnlock(data_.get(), size_ + 1);
+        #else
+            munlock(data_.get(), size_ + 1);
+        #endif
+    }
 }
+
+// Prevent copying (only move)
+secure_string(const secure_string&) = delete;
+secure_string& operator=(const secure_string&) = delete;
 
 secure_string::secure_string(secure_string&& other) noexcept
     : data_(std::move(other.data_)), size_(other.size_) {
@@ -75,9 +92,55 @@ std::string secure_string::to_string() const {
     return data_ ? std::string(data_.get(), size_) : std::string();
 }
 
-// ============================================================================
-// SecretsManager Implementation
-// ============================================================================
+// SecretsManager EncryptionImpl Implementation
+class SecretsManager::EncryptionImpl {
+    public:
+        static bool init() {
+            return sodium_init() >= 0;
+        }
+
+        static std::vector<unint8_t> encrypt(const secure_string& plaintext, const std::vector<uint8_t>& key) {
+            std::vector<uint8_t> ciphertext(plaintext.size() + crypto_secretbox_MACBYTES);
+            std::vector<uint8_t> nonce(crypto_secretbox_NONCEBYTES);
+            randombytes_buf(nonce.data(), nonce.size());
+
+            crypto_secretbox_easy(
+                ciphertext.data(),
+                reinterpret_cast<const char*>(plaintext.data()),
+                plaintext.to_string().size(),
+                nonce.data(),
+                key.data()
+            );
+
+            // Prepend nonce to ciphertext for storage
+            std::vector<uint8_t> result;
+            result.insert(result.end(), nonce.begin(), nonce.end());
+            result.insert(result.end(), ciphertext.begin(), ciphertext.end());
+            return result;
+        }
+
+        static secure_string decrypt(const std::vector<uint8_t>& ciphertext, const std::vector<uint8_t>& key) {
+            if (ciphertext.size() < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) {
+                return secure_string();
+            }
+
+            std::vector<uint8_t> nonce(ciphertext.begin(), ciphertext.begin() + crypto_secretbox_NONCEBYTES);
+            std::vector<uint8_t> encrypted(ciphertext.begin() + crypto_secretbox_NONCEBYTES, ciphertext.end());
+            std::vector<unint8_t> decrypted(encrypted.size() - crypto_secretbox_MACBYTES);
+
+            if (crypto_secretbox_open_easy(
+                decrypted.data(),
+                encrypted.data(),
+                encrypted.size(),
+                nonce.data(),
+                key.data()
+            ) != 0) {
+                return secure_string(); // corrupted or tampered
+            }
+
+            return secure_string(std::string(decrypted.begin(), decrypted.end()));
+        }
+};
 
 SecretsManager& SecretsManager::instance() {
     static SecretsManager manager;
