@@ -146,13 +146,15 @@ private:
 // Helper class for model discovery
 class ModelRegistry {
 public:
+    // Note: Most models on OpenRouter now require credits (minimum $1)
+    // These model names are provided for reference when you have credits
     static std::vector<std::string> get_free_models() {
         return {
-            "google/gemma-2-2b-it",
-            "microsoft/phi-2",
-            "meta-llama/llama-3-8b-instruct",
-            "mistralai/mistral-7b-instruct",
-            "nousresearch/hermes-2-pro-mistral-7b"
+            "google/gemma-2-2b-it",   //Requires credits
+            "microsoft/phi-2",  //Requires credits
+            "meta-llama/llama-3-8b-instruct",  //Requires credits
+            "mistralai/mistral-7b-instruct",  //Requires credits
+            "nousresearch/hermes-2-pro-mistral-7b"  //Requires credits
         };
     }
     
