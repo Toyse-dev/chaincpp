@@ -44,10 +44,17 @@ target_link_libraries(chaincpp
     PUBLIC
     CURL::libcurl
     nlohmann_json::nlohmann_json
-    crypt32
-    ws2_32
-    wldap32
 )
+
+# Platform-specific libraries for security features
+if(WIN32)
+    target_link_libraries(chaincpp PRIVATE crypt32 ws2_32 wldap32)
+endif()
+
+# For Linux, add pthread if needed
+if(UNIX AND NOT APPLE)
+    target_link_libraries(chaincpp PRIVATE pthread)
+endif()
 
 target_include_directories(chaincpp PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
