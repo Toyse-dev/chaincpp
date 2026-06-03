@@ -148,6 +148,12 @@ public:
         std::function<Result<void>()> func,
         const SecurityLimits& limits = SecurityLimits::safe_defaults()
     );
+
+     // Process-based sandboxing (safer than threads)
+    static Result<void> execute_in_process(
+        std::function<int()> func,
+        const SecurityLimits& limits
+    );
     
     template<typename T>
     static Result<T> execute_safe_result(
