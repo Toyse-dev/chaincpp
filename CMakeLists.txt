@@ -7,9 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find Dependencies
+find_package(Zstd REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
-find_package(libsodium REQUIRED)
+
+# Use PkgConfig to find libsodium safely on Windows/MSYS2
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBSODIUM REQUIRED IMPORTED_TARGET libsodium)
 
 # Build options
 option(BUILD_TESTS "Build tests" ON)
@@ -45,7 +49,8 @@ target_link_libraries(chaincpp
     PUBLIC
     CURL::libcurl
     nlohmann_json::nlohmann_json
-    libsodium::libsodium
+    PkgConfig::LIBSODIUM
+    zstd::libzstd_static
 )
 
 # Platform-specific libraries for security features
@@ -95,9 +100,6 @@ if(BUILD_EXAMPLES)
         examples/basic_usage.cpp
     )
     target_link_libraries(basic_usage chaincpp)
-
-    # Adding crypt32
-    target_link_libraries(chaincpp PUBLIC CURL::libcurl nlohmann_json::nlohmann_json crypt32)
 
     add_executable(prompt_example
         examples/prompt_example.cpp
