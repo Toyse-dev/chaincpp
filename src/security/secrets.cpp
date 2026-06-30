@@ -13,6 +13,7 @@
 #include <Security/Security.h>
 #else
 // Linux - use file with permissions
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -59,9 +60,9 @@ secure_string::~secure_string() {
     }
 }
 
-// Prevent copying (only move)
-secure_string(const secure_string&) = delete;
-secure_string& operator=(const secure_string&) = delete;
+// // Prevent copying (only move)
+// secure_string(const secure_string&) = delete;
+// secure_string& operator=(const secure_string&) = delete;
 
 secure_string::secure_string(secure_string&& other) noexcept
     : data_(std::move(other.data_)), size_(other.size_) {
@@ -93,53 +94,52 @@ std::string secure_string::to_string() const {
 }
 
 // SecretsManager EncryptionImpl Implementation
-class SecretsManager::EncryptionImpl {
-    public:
-        static bool init() {
-            return sodium_init() >= 0;
+struct SecretsManager::EncryptionImpl {
+    static bool init() {
+        return sodium_init() >= 0;
+    }
+
+    static std::vector<uint8_t> encrypt(const secure_string& plaintext, const std::vector<uint8_t>& key) {
+        std::vector<uint8_t> ciphertext(plaintext.size() + crypto_secretbox_MACBYTES);
+        std::vector<uint8_t> nonce(crypto_secretbox_NONCEBYTES);
+        randombytes_buf(nonce.data(), nonce.size());
+
+        crypto_secretbox_easy(
+            ciphertext.data(),
+            reinterpret_cast<const unsigned char*>(plaintext.c_str()),
+            plaintext.to_string().size(),
+            nonce.data(),
+            key.data()
+        );
+
+        // Prepend nonce to ciphertext for storage
+        std::vector<uint8_t> result;
+        result.insert(result.end(), nonce.begin(), nonce.end());
+        result.insert(result.end(), ciphertext.begin(), ciphertext.end());
+        return result;
+    }
+
+    static secure_string decrypt(const std::vector<uint8_t>& ciphertext, const std::vector<uint8_t>& key) {
+        if (ciphertext.size() < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) {
+            return secure_string();
         }
 
-        static std::vector<unint8_t> encrypt(const secure_string& plaintext, const std::vector<uint8_t>& key) {
-            std::vector<uint8_t> ciphertext(plaintext.size() + crypto_secretbox_MACBYTES);
-            std::vector<uint8_t> nonce(crypto_secretbox_NONCEBYTES);
-            randombytes_buf(nonce.data(), nonce.size());
+        std::vector<uint8_t> nonce(ciphertext.begin(), ciphertext.begin() + crypto_secretbox_NONCEBYTES);
+        std::vector<uint8_t> encrypted(ciphertext.begin() + crypto_secretbox_NONCEBYTES, ciphertext.end());
+        std::vector<uint8_t> decrypted(encrypted.size() - crypto_secretbox_MACBYTES);
 
-            crypto_secretbox_easy(
-                ciphertext.data(),
-                reinterpret_cast<const char*>(plaintext.data()),
-                plaintext.to_string().size(),
-                nonce.data(),
-                key.data()
-            );
-
-            // Prepend nonce to ciphertext for storage
-            std::vector<uint8_t> result;
-            result.insert(result.end(), nonce.begin(), nonce.end());
-            result.insert(result.end(), ciphertext.begin(), ciphertext.end());
-            return result;
+        if (crypto_secretbox_open_easy(
+            decrypted.data(),
+            encrypted.data(),
+            encrypted.size(),
+            nonce.data(),
+            key.data()
+        ) != 0) {
+            return secure_string(); // corrupted or tampered
         }
 
-        static secure_string decrypt(const std::vector<uint8_t>& ciphertext, const std::vector<uint8_t>& key) {
-            if (ciphertext.size() < crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES) {
-                return secure_string();
-            }
-
-            std::vector<uint8_t> nonce(ciphertext.begin(), ciphertext.begin() + crypto_secretbox_NONCEBYTES);
-            std::vector<uint8_t> encrypted(ciphertext.begin() + crypto_secretbox_NONCEBYTES, ciphertext.end());
-            std::vector<unint8_t> decrypted(encrypted.size() - crypto_secretbox_MACBYTES);
-
-            if (crypto_secretbox_open_easy(
-                decrypted.data(),
-                encrypted.data(),
-                encrypted.size(),
-                nonce.data(),
-                key.data()
-            ) != 0) {
-                return secure_string(); // corrupted or tampered
-            }
-
-            return secure_string(std::string(decrypted.begin(), decrypted.end()));
-        }
+        return secure_string(std::string(decrypted.begin(), decrypted.end()));
+    }
 };
 
 SecretsManager& SecretsManager::instance() {
@@ -149,44 +149,49 @@ SecretsManager& SecretsManager::instance() {
 
 Result<void> SecretsManager::store_key(const std::string& service, const secure_string& key) {
     cleanup_cache();
-    
-    auto encrypted = encrypt(key);
-    if (!store_secure(service, encrypted)) {
+
+    std::vector<uint8_t> master_key(crypto_secretbox_KEYBYTES, 0x4A);
+
+    auto encrypted = EncryptionImpl::encrypt(key, master_key);
+    if (!store_secure(service, encrypted)){
         return Result<void>::err("Failed to store key for service: " + service);
     }
-    
-    // Cache the key
-    secure_string cache_val(key.to_string());
-    cache_[service] = {std::move(cache_val), std::chrono::steady_clock::now()};
-    
+
+    // Explicit assignment bypasses brace-init conversion restrictions
+    CachedKey cache_entry;
+    cache_entry.key = secure_string(key.to_string());
+    cache_entry.timestamp = std::chrono::steady_clock::now();
+    cache_[service] = std::move(cache_entry);
+
     return Result<void>::ok();
 }
 
 Result<secure_string> SecretsManager::get_key(const std::string& service) {
     cleanup_cache();
-    
-    // Check cache first
+
     auto it = cache_.find(service);
     if (it != cache_.end()) {
         auto now = std::chrono::steady_clock::now();
         if (now - it->second.timestamp < CACHE_TTL) {
-            // Create a new secure_string from the cached data
             return Result<secure_string>::ok(secure_string(it->second.key.to_string()));
         }
     }
-    
-    // Retrieve from secure storage
+
     auto encrypted = retrieve_secure(service);
     if (!encrypted.has_value()) {
         return Result<secure_string>::err("Key not found for service: " + service);
     }
-    
-    auto key = decrypt(encrypted.value());
-    
-    // Move into cache, then return a new instance for the user
+
+    std::vector<uint8_t> master_key(crypto_secretbox_KEYBYTES, 0x4A);
+    auto key = EncryptionImpl::decrypt(encrypted.value(), master_key);
+
     std::string key_raw = key.to_string();
-    cache_[service] = {std::move(key), std::chrono::steady_clock::now()};
-    
+
+    CachedKey cache_entry;
+    cache_entry.key = std::move(key);
+    cache_entry.timestamp = std::chrono::steady_clock::now();
+    cache_[service] = std::move(cache_entry);
+
     return Result<secure_string>::ok(secure_string(key_raw));
 }
 
@@ -311,9 +316,7 @@ void SecretsManager::cleanup_cache() {
     }
 }
 
-// ============================================================================
 // KeyGuard Implementation
-// ============================================================================
 
 KeyGuard::KeyGuard(const std::string& service) {
     auto result = SecretsManager::instance().get_key(service);
@@ -327,4 +330,4 @@ KeyGuard::~KeyGuard() {
     // key_ automatically zeroed on destruction
 }
 
-} // namespace chaincpp::security
+}
