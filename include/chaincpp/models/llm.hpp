@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include <memory>
+#include <chrono>
 
 namespace chaincpp::models {
 
@@ -26,11 +27,11 @@ struct Message {
     static Message system(std::string content);
     static Message user(std::string content);
     static Message assistant(std::string content);
-    static Message tool(std::string content, std::string name);
+    static Message tool(std::string content, std::string name = "");
 };
 
 // Streaming callback
-using StreamCallback = std::function<security::Result<void>(std::string_view chunk)>;
+using StreamCallback = std::function<void(std::string_view)>;
 
 // Model configuration
 struct ModelConfig {
@@ -83,10 +84,8 @@ public:
     static security::Result<std::unique_ptr<OpenAIChat>> create(Config cfg);
     ~OpenAIChat();
     
-    security::Result<std::string> generate(
-        const std::vector<Message>& messages,
-        const ModelConfig& config = ModelConfig{}
-    ) override;
+    security::Result<std::string> generate(const std::vector<Message>& messages, const ModelConfig& config = ModelConfig{}) override;
+    security::Result<std::string> generate(const std::vector<Message>& messages, StreamCallback stream_cb = nullptr);
     
     security::Result<void> stream_generate(
         const std::vector<Message>& messages,
@@ -123,10 +122,8 @@ public:
     static security::Result<std::unique_ptr<AnthropicChat>> create(Config cfg);
     ~AnthropicChat();
     
-    security::Result<std::string> generate(
-        const std::vector<Message>& messages,
-        const ModelConfig& config = ModelConfig{}
-    ) override;
+    security::Result<std::string> generate(const std::vector<Message>& messages, const ModelConfig& config = ModelConfig{}) override;
+    security::Result<std::string> generate(const std::vector<Message>& messages, StreamCallback stream_cb = nullptr);
     
     security::Result<void> stream_generate(
         const std::vector<Message>& messages,
@@ -146,7 +143,6 @@ private:
 // Helper class for model discovery
 class ModelRegistry {
 public:
-    // Note: Most models on OpenRouter now require credits (minimum $1)
     // These model names are provided for reference when you have credits
     static std::vector<std::string> get_free_models() {
         return {
@@ -189,10 +185,8 @@ public:
     static security::Result<std::unique_ptr<LocalLLM>> create(Config cfg);
     ~LocalLLM();
     
-    security::Result<std::string> generate(
-        const std::vector<Message>& messages,
-        const ModelConfig& config = ModelConfig{}
-    ) override;
+    security::Result<std::string> generate(const std::vector<Message>& messages, const ModelConfig& config = ModelConfig{}) override;
+    security::Result<std::string> generate(const std::vector<Message>& messages, StreamCallback stream_cb = nullptr);
     
     security::Result<void> stream_generate(
         const std::vector<Message>& messages,
