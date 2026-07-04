@@ -66,7 +66,7 @@ int main() {
                     Message::user(formatted.value())
                 };
                 
-                auto response = llm->generate(messages);
+                auto response = llm->generate(messages, chaincpp::models::ModelConfig{});
                 if (response.is_ok()) {
                     std::cout << "\nResponse: " << response.value() << "\n";
                 }
