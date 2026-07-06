@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../security/sandbox.hpp"
+#include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 #include <functional>
@@ -9,10 +10,10 @@
 
 namespace chaincpp::agents {
 
-// ============================================================================
-// Tool Capabilities - Declarative security manifest
-// ============================================================================
+    // The alias to recognize json type from nlohmann library
+    using json = nlohmann::json;
 
+// Tool Capabilities - Declarative security manifest
 struct ToolCapabilities {
     bool needs_network = false;
     std::vector<std::string> allowed_domains;
@@ -66,12 +67,13 @@ struct ToolCapabilities {
     }
 };
 
-// ============================================================================
 // Tool Class - Executable function with security
-// ============================================================================
 
 class Tool {
 public:
+// Force a native public constructor for map compatibility
+    Tool() = default;
+    
     using ToolFunc = std::function<security::Result<std::string>(const std::string&)>;
     
     // Create a new tool
@@ -98,7 +100,6 @@ public:
     json to_json() const;
     
 private:
-    Tool() = default;
     
     std::string name_;
     std::string description_;
@@ -107,9 +108,7 @@ private:
     std::string input_schema_;
 };
 
-// ============================================================================
 // Tool Registry - Manage available tools
-// ============================================================================
 
 class ToolRegistry {
 public:
@@ -135,9 +134,7 @@ private:
     std::map<std::string, Tool> tools_;
 };
 
-// ============================================================================
 // Built-in Tools
-// ============================================================================
 
 namespace builtin_tools {
 
