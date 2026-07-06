@@ -37,7 +37,7 @@ security::Result<Tool> Tool::create(
     
     // Parse schema to validate it's valid JSON
     try {
-        json::parse(input_schema);
+        [[maybe_unused]] auto dummy_parsed = json::parse(input_schema);
     } catch (const std::exception& e) {
         return security::Result<Tool>::err("Invalid JSON schema: " + std::string(e.what()));
     }
