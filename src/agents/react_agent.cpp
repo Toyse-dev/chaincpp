@@ -245,14 +245,7 @@ private:
 };
 
 // Public ReActAgent Class Interface Forwarding Blocks
-
-ReActAgent::ReActAgent() = default;
-
 ReActAgent::~ReActAgent() = default;
-
-security::Result<std::string> ReActAgent::run(const std::string& user_input) {
-    return impl_->run(user_input);
-}
 
 security::Result<std::string> ReActAgent::run(const std::string& user_input) {
     return impl_->run(user_input);
