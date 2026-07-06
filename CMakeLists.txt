@@ -43,6 +43,8 @@ add_library(chaincpp STATIC
     src/security/secrets.cpp
     src/core/prompt.cpp
     src/models/llm.cpp
+    src/agents/tool.cpp
+    src/agents/react_agent.cpp
 )
 
 target_link_libraries(chaincpp
