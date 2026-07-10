@@ -45,6 +45,9 @@ add_library(chaincpp STATIC
     src/models/llm.cpp
     src/agents/tool.cpp
     src/agents/react_agent.cpp
+    src/rag/document.cpp
+    src/rag/embeddings.cpp
+    src/rag/vector_store.cpp
 )
 
 target_link_libraries(chaincpp
