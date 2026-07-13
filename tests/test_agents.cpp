@@ -2,20 +2,21 @@
 #include "chaincpp/agents/react_agent.hpp"
 #include "chaincpp/models/llm.hpp"
 #include <iostream>
+#include <cassert>
 
 using namespace chaincpp::agents;
 using namespace chaincpp::models;
+using namespace chaincpp::security;
 
 void test_tool_creation() {
     std::cout << "Testing Tool creation...\n";
     
     // Test valid tool
-    auto tool_result = builtin_tools::create_time_tool();
-    assert(tool_result.is_ok());
-    std::cout << "  ✓ Time tool created\n";
+    Tool time_tool = builtin_tools::create_time_tool();
+    std::cout << " Time tool created\n";
     
     // Test tool execution
-    auto result = tool_result.value().execute("{}");
+    auto result = time_tool.execute("{}");
     assert(result.is_ok());
     std::cout << "  Time tool executed: " << result.value().substr(0, 20) << "...\n";
     
@@ -62,8 +63,8 @@ void test_tool_security() {
     auto tool = Tool::create(
         "safe_web",
         "Safe web tool",
-        [](const std::string&) -> security::Result<std::string> {
-            return security::Result<std::string>::ok("OK");
+        [](const std::string&) -> chaincpp::security::Result<std::string> {
+            return chaincpp::security::Result<std::string>::ok("OK");
         },
         caps
     );
@@ -79,8 +80,8 @@ void test_tool_security() {
     auto invalid_tool = Tool::create(
         "invalid",
         "Invalid tool",
-        [](const std::string&) -> security::Result<std::string> {
-            return security::Result<std::string>::ok("OK");
+        [](const std::string&) -> chaincpp::security::Result<std::string> {
+            return chaincpp::security::Result<std::string>::ok("OK");
         },
         invalid_caps
     );
