@@ -6,7 +6,7 @@ Because this is a security library operating in native code, we maintain excepti
 
 ---
 
-## 🧭 Core Architectural Principles
+## Core Architectural Principles
 
 When writing code for `chaincpp`, you must adhere to the following principles:
 
@@ -17,7 +17,7 @@ When writing code for `chaincpp`, you must adhere to the following principles:
 
 ---
 
-## 🛠️ Code Style & Defensive Requirements
+## Code Style & Defensive Requirements
 
 ### 1. Memory Safety & Pinned Secrets
 * Never use raw pointers (`Type*`) for ownership tracking; utilize `std::unique_ptr` or `std::shared_ptr`.
@@ -32,7 +32,7 @@ When writing code for `chaincpp`, you must adhere to the following principles:
 
 ---
 
-## 🌿 Git Workflow & Pull Requests
+## Git Workflow & Pull Requests
 
 We follow a structured pull request branch workflow:
 
@@ -48,7 +48,7 @@ We follow a structured pull request branch workflow:
 
 ---
 
-## 🧪 Testing Requirements
+## Testing Requirements
 
 We practice strict test-driven development. **No pull request will be merged without matching test coverage.**
 
