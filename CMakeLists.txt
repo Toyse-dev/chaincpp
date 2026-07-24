@@ -6,15 +6,26 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Build options toggle (Deafult OFF for fast compilation safety)
+option(CHAINCOO_STATIC_EXE "Build static standalone executable binaries" OFF)
+
+if (CHAINCPP_STATIC_EXE AND WIN32)
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
+
 # Find Dependencies
 find_package(Zstd REQUIRED)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(llama REQUIRED)
 
+# Try native config discovery first, fallback safely to PkgConfig for MSYS2 UCRT64 compatibility
+find_package(unofficial-sodium CONFIG QUIET)
+if(NOT unofficial-sodium_FOUND)
 # Use PkgConfig to find libsodium safely on Windows/MSYS2
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBSODIUM REQUIRED IMPORTED_TARGET libsodium)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBSODIUM REQUIRED IMPORTED_TARGET libsodium)
+endif()
 
 # Build options
 option(BUILD_TESTS "Build tests" ON)
@@ -57,17 +68,34 @@ target_link_libraries(chaincpp
     nlohmann_json::nlohmann_json
     PkgConfig::LIBSODIUM
     zstd::libzstd_static
-    llama
 )
+
+# Bind libsodium accurately based on discovery paths
+if(unofficial-sodium_FOUND)
+    target_link_libraries(chaincpp PUBLIC unofficial-sodium::sodium)
+else()
+    target_link_libraries(chaincpp PUBLIC PkgConfig::LIBSODIUM)
+endif()
+
+# Smart llama target naming check mechanism
+if(TARGET llama::llama)
+    target_link_libraries(chaincpp PUBLIC llama::llama)
+else()
+    target_link_libraries(chaincpp PUBLIC llama)
+endif()
 
 # Platform-specific libraries for security features
 if(WIN32)
     target_link_libraries(chaincpp PRIVATE crypt32 ws2_32 wldap32)
+    # Advanced binary exploit protections (CFG, ASLR, DEP)
+    target_link_options(chaincpp PRIVATE "/guard:cf" "/DYNAMICBASE" "/NXCOMPAT")
 endif()
 
 # For Linux, add pthread if needed
 if(UNIX AND NOT APPLE)
     target_link_libraries(chaincpp PRIVATE pthread)
+    # Enterprise binary hardening parameters (Position Independent Executable + Relro)
+    target_link_options(chaincpp PRIVATE "-pie" "-Wl,-z,now,-z,relro")
 endif()
 
 target_include_directories(chaincpp PUBLIC
