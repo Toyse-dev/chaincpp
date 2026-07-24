@@ -4,9 +4,21 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <cstring>
+#include <cstdlib>
 
 #ifdef _WIN32
 #include <winsock2.h>
+// Enforce an explicit RAII wrapper block to protect Winsock memory from early returns leaking
+struct WinsockRAIIGuard {
+    WinsockRAIIGuard() {
+        WSADATA wsaData;
+        WSAStartup(MAKEWORD(2,2), &wsaData);
+    }
+    ~WinsockRAIIGuard() {
+        WSACleanup();
+    }
+};
 #endif
 
 using namespace chaincpp::models;
@@ -14,12 +26,7 @@ using namespace chaincpp::core;
 
 int main() {
     #ifdef _WIN32
-        // Force Windows to initialize network sockets for this console app
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            std::cerr << "Failed to initialize Winsock network layer. \n";
-            return 1;
-        }
+        WinsockRAIIGuard winsock_guard; // Locked onto the scope stack frame safely
     #endif
 
     std::cout << "\n========================================\n";
@@ -36,8 +43,8 @@ int main() {
         std::cerr << "Failed to create prompt: " << prompt_result.error() << "\n";
         return 1;
     }
-    
-    auto prompt = prompt_result.value();
+    // Leverage std::move to prevent heavy structural object vector allocations 
+    auto prompt = std::move(prompt_result.value());
 
     // Pass custom OpenRouter endpoint configurations
     OpenAIChat::Config router_config;
@@ -45,6 +52,13 @@ int main() {
     router_config.api_key_env_var = "OPENROUTER_API_KEY"; // Searches for this env var instead of OPENAI_API_KEY
     
     auto openai_result = OpenAIChat::create(router_config);
+
+    // Create a base configuration selecting a free model
+        ModelConfig test_config;
+        test_config.model_name = "meta-llama/llama-3-8b-instruct";
+        test_config.temperature = 0.5f; // Added 'f' to clarify float type
+        test_config.max_tokens = 200;
+        test_config.timeout = std::chrono::seconds(60);
     
     if (openai_result.is_err()) {
         std::cout << "Warning: OpenRouter client not available: " << openai_result.error() << "\n";
@@ -65,8 +79,9 @@ int main() {
                 std::vector<Message> messages = {
                     Message::user(formatted.value())
                 };
-                
-                auto response = llm->generate(messages, chaincpp::models::ModelConfig{});
+                // Invoke the explicit virtual ModelConfig overload structure cleanly
+                test_config.model_name = "local-embedding";
+                auto response = llm->generate(messages, test_config);
                 if (response.is_ok()) {
                     std::cout << "\nResponse: " << response.value() << "\n";
                 }
@@ -87,13 +102,6 @@ int main() {
             "meta-llama/llama-3-8b-instruct",
             "meta-llama/llama-3-70b-instruct",
         };
-
-        // Create a base configuration selecting a free model
-        ModelConfig test_config;
-        test_config.model_name = "meta-llama/llama-3-8b-instruct";
-        test_config.temperature = 0.5f; // Added 'f' to clarify float type
-        test_config.max_tokens = 200;
-        test_config.timeout = std::chrono::seconds(60);
 
         bool found_working_model = false;
         std::string working_model;
