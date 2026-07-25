@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <initializer_list>
 
 namespace chaincpp {
 
@@ -42,6 +43,36 @@ inline security::Result<std::string> operator|(
 
     // Execute completion through the runtime client
     return llm.generate(messages);
+}
+
+// Allow raw bracketed initializer lists to pipe straight into templates
+inline std::pair<const core::PromptTemplate&, std::map<std::string, std::string>> operator|(
+    std::initializer_list<std::pair<const std::string, std::string>> init_list,
+    const core::PromptTemplate& prompt_template
+) {
+    std::map<std::string, std::string> vars;
+    for (const auto& pair : init_list) {
+        vars[pair.first] = pair.second;
+    }
+    return {prompt_template, std::move(vars)};
+}
+
+// Allow a formatted safe string result to pipe directly into an LLM object instance
+inline security::Result<std::string> operator|(
+    security::Result<std::string> formatted_prompt,
+    models::BaseLLM& llm
+) {
+    if (formatted_prompt.is_err()) {
+        return security::Result<std::string>::err(formatted_prompt.error());
+    }
+    
+    std::vector<models::Message> messages = {
+        models::Message::user(formatted_prompt.value())
+    };
+    
+    // Explicitly select the default ModelConfig overload to prevent parameter ambiguity
+    models::ModelConfig default_cfg;
+    return llm.generate(messages, default_cfg);
 }
 
 }
