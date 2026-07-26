@@ -4,7 +4,6 @@
 #include <string>
 #include <vector>
 #include <map>
-// #include <regex>
 #include <optional>
 
 namespace chaincpp::core {
@@ -16,7 +15,6 @@ public:
     enum class Context {
         JSON,      // Escape for JSON strings
         SHELL,     // Escape for shell commands
-        // SQL,       // Escape for SQL queries
         HTML,      // Escape for HTML output
         PLAIN      // Plain text (no escaping)
     };
@@ -30,7 +28,6 @@ public:
 private:
     static std::string escape_json(std::string_view input);
     static std::string escape_shell(std::string_view input);
-    // static std::string escape_sql(std::string_view input);
     static std::string escape_html(std::string_view input);
 };
 
