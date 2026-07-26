@@ -14,10 +14,11 @@ std::string OutputSanitizer::escape_json(std::string_view input) {
     nlohmann::json j = std::string(input);
     std::string dumped = j.dump();
     // Remove the surrounding quotes added by dump()
-    if (dumped.size() >= 2 && dumped.front() == '"' && dumped.back() == '"') {
-        return dumped.substr(1, dumped.size() - 2); // Should not happen, but just in case
+    if (dumped.size() <  2) {
+        return "";
     }
-    return dumped;
+
+    return dumped.substr(1, dumped.size() - 2);
 }
 
 std::string OutputSanitizer::escape_shell(std::string_view input) {
@@ -53,20 +54,6 @@ std::string OutputSanitizer::escape_html(std::string_view input) {
 
 std::string OutputSanitizer::escape(std::string_view input, Context context) {
     switch (context) {
-        // case Context::SQL: {
-        //     std::string escaped;
-        //     escaped.reserve(input.size() * 1.1); // Reserve basic padding
-        //     for (char c : input) {
-        //         if (c == '\'') {
-        //             escaped += "''"; // Escape single quote for SQL databases
-        //         } else if (c == '\\') {
-        //             escaped += "\\\\"; // Avoid escape sequence vulnerabilities
-        //         } else {
-        //             escaped += c;
-        //         }
-        //     }
-        //     return escaped;
-        // }
         case Context::JSON:  return escape_json(input);
         case Context::SHELL: return escape_shell(input);
         case Context::HTML:  return escape_html(input);
@@ -190,19 +177,36 @@ InjectionDetector::DetectionResult InjectionDetector::detect(std::string_view te
 security::Result<PromptTemplate> PromptTemplate::create(std::string_view template_str) {
     PromptTemplate pt;
     pt.template_str_ = std::string(template_str);
+
+    std::unordered_set<std::string> seen;
     size_t pos = 0;
 
-    while ((pos = pt.template_str_.find('{', pos)) != std::string::npos) {
-        size_t end_pos = pt.template_str_.find('}', pos);
-        if (end_pos == std::string::npos || end_pos == pos + 1) {
+    while (pos < pt.template_str_.size()) {
+        // Find the next opening bracket starting from our current position
+        size_t start_pos = pt.template_str_.find('{', pos);
+        if (start_pos == std::string::npos) {
+            break; // No more variables found, safely exit loop
+        }
+
+        size_t end_pos = pt.template_str_.find('}', start_pos);
+        if (end_pos == std::string::npos || end_pos == start_pos + 1) {
             return security::Result<PromptTemplate>::err("Malformed template variable formatting structure layout.");
         }
-        std::string var_name = pt.template_str_.substr(pos + 1, end_pos - pos - 1);
+
+        // Extract and validate the token name
+        std::string var_name = pt.template_str_.substr(start_pos + 1, end_pos - start_pos - 1);
         if (var_name.empty()) {
             return security::Result<PromptTemplate>::err("Empty variable name in template");
         }
-        pt.required_vars_.push_back(var_name);
-        pt.variable_positions_.push_back({pos, end_pos + 1});
+
+        // Deduplicate required_vars_ while preserving initial insertion order
+        if (seen.insert(var_name).second) {
+            pt.required_vars_.push_back(var_name);
+        }
+
+        pt.variable_positions_.push_back({start_pos, end_pos + 1});
+
+        // Securely advance the cursor past the closing brace boundary
         pos = end_pos + 1;
     }
     return security::Result<PromptTemplate>::ok(std::move(pt));
