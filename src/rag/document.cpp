@@ -227,7 +227,10 @@ security::Result<Document> DocumentLoader::load_text_file(const std::string& fil
     return security::Result<Document>::ok(std::move(doc));
 }
 
-security::Result<std::vector<Document>> DocumentLoader::load_text_directory(const std::string& dirpath) {
+security::Result<std::vector<Document>> DocumentLoader::load_text_directory(
+    const std::string& dirpath,
+    const std::vector<std::string>& allowed_paths
+) {
     // Enforce defense-indepth path checking
     if (!is_path_allowlisted(dirpath, allowed_paths)) {
         return security::Result<std::vector<Document>>::err("Security Access Denied: Directory path outside allowed sandbox boundaries.");
