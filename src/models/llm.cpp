@@ -11,6 +11,9 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <random>
+#include <cmath>
+#include <limits>
 
 using json = nlohmann::json;
 
@@ -93,8 +96,6 @@ static security::Result<std::string> execute_secure_request(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &payload);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout.count()));
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
-    curl_easy_setopt(curl, CURLOPT_PROXY, "");
     
     #if defined(_WIN32) 
         // Use windows certificate store
@@ -257,7 +258,8 @@ security::Result<std::string> AnthropicChat::generate(const std::vector<Message>
 
     std::string auth = "X-API-Key: " + api_key_.to_string(); // Anthropic custom header
 
-    auto res = execute_secure_request("https://anthropic.com", body.dump(), auth, std::chrono::seconds(30), stream_cb ? &stream_cb : nullptr);
+    auto res = execute_secure_request(config_.base_url + "/v1/messages", body.dump(), auth, std::chrono::seconds(30), stream_cb ? &stream_cb : nullptr);
+    body["model"] = "claude-3-5-sonnet";
     if (res.is_err()) return res;
     
     try {
@@ -362,29 +364,66 @@ public:
             return security::Result<std::string>::err("Local inference failure: Initial batch evaluation matrix sequence failed.");
         }
 
+        // Initialize random engine natively using our thread-safe random configurations
+        std::random_device rd;
+        std::mt19937 gen(rd());
+
         llama_token curr_token = 0;
         int max_generation_tokens = std::min(static_cast<int>(config.max_tokens), 4096);
-        
+        int vocab_size = llama_vocab_n_tokens(vocab);
+
         for (int i = 0; i < max_generation_tokens; ++i) {
             auto logits = llama_get_logits_ith(ctx_, batch.n_tokens - 1);
-            int vocab_size = llama_vocab_n_tokens(vocab);
+
+            // Temparature sampling
+            if (config.temperature > 0.001f) {
+                // Scale logits by temparature and find maximum logit for numerical stability
+                std::vector<float> scaled_probs(vocab_size);
+                float max_logit = -std::numeric_limits<float>::infinity();
+                for (int v = 0; v < vocab_size; ++v) {
+                    scaled_probs[v] = logits[v] / config.temperature;
+                    if (scaled_probs[v] > max_logit) max_logit = scaled_probs[v];
+                }
+
+                // Compute softmax probabilities with exponential stability protections
+                float sum = 0.0f;
+                for (int v = 0; v < vocab_size; ++v) {
+                    scaled_probs[v] = std::exp(scaled_probs[v] - max_logit);
+                    sum += scaled_probs[v];
+                }
+                for (int v = 0; v < vocab_size; ++v) {
+                    scaled_probs[v] /= sum;
+                }
+
+                // Randomly sample token based on computed Softmax probability weights
+                 std::discrete_distribution<int> dist(scaled_probs.begin(), scaled_probs.end());
+                 curr_token = static_cast<llama_token>(dist(gen));
+        } else {
+            // Fallback to greedy deterministic search when temperature is 0
             curr_token = std::distance(logits, std::max_element(logits, logits + vocab_size));
+        }
 
-            if (curr_token == llama_vocab_eos(vocab)) {
-                break; 
-            }
+        if (curr_token == llama_vocab_eos(vocab)) {
+            break; // End of sequence encountered cleanly
+        }
+        
+        // Dynamic sizing pass to prevent silent truncation on large/multi-byte token
+        int n_chars = llama_token_to_piece(vocab, curr_token, nullptr, 0, 0, true);
+        if (n_chars > 0) {
+            std::string piece_buf(n_chars, '\0');
+            int check_chars = llama_token_to_piece(vocab, curr_token, piece_buf.data(), piece_buf.size(), 0, true);
 
-            char piece_buffer[16];
-            int n_chars = llama_token_to_piece(vocab, curr_token, piece_buffer, sizeof(piece_buffer), 0, true);
-            if (n_chars > 0) {
-                output_response.append(piece_buffer, n_chars);
-            }
-
-            batch = llama_batch_get_one(&curr_token, 1);
-            if (llama_decode(ctx_, batch) != 0) {
-                break;
+            if (check_chars > 0) {
+                output_response.append(piece_buf.data(), check_chars);
             }
         }
+
+        // Feed current token back to context loop for next iteration phase tracking
+        batch = llama_batch_get_one(&curr_token, 1);
+        if (llama_decode(ctx_, batch) != 0) {
+            break;
+        }
+    }
 
         return security::Result<std::string>::ok(std::move(output_response));
     }
