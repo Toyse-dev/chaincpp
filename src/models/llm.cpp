@@ -332,10 +332,8 @@ public:
         }
 
         // Build a compiled text payload out of conversational message inputs
-        std::string raw_prompt = "";
-        for (const auto& msg : messages) {
-            raw_prompt += msg.content + "\n";
-        }
+        std::string raw_prompt;
+        for (const auto& msg : messages) raw_prompt += msg.content + "\n";
 
         // Fetch the distinct vocabulary instance from the modern engine layout
         const struct llama_vocab* vocab = llama_model_get_vocab(model_);
@@ -398,9 +396,9 @@ public:
                 // Randomly sample token based on computed Softmax probability weights
                  std::discrete_distribution<int> dist(scaled_probs.begin(), scaled_probs.end());
                  curr_token = static_cast<llama_token>(dist(gen));
-        } else {
-            // Fallback to greedy deterministic search when temperature is 0
-            curr_token = std::distance(logits, std::max_element(logits, logits + vocab_size));
+            } else {
+                // Fallback to greedy deterministic search when temperature is 0
+                curr_token = std::distance(logits, std::max_element(logits, logits + vocab_size));
         }
 
         if (curr_token == llama_vocab_eos(vocab)) {
@@ -408,14 +406,19 @@ public:
         }
         
         // Dynamic sizing pass to prevent silent truncation on large/multi-byte token
-        int n_chars = llama_token_to_piece(vocab, curr_token, nullptr, 0, 0, true);
-        if (n_chars > 0) {
-            std::string piece_buf(n_chars, '\0');
-            int check_chars = llama_token_to_piece(vocab, curr_token, piece_buf.data(), piece_buf.size(), 0, true);
+        char static_buf[64];
+        int n_chars = llama_token_to_piece(vocab, curr_token, static_buf, sizeof(static_buf), 0, true);
+        if (n_chars < 0) {
+            // Allocate a dynamic temporary vector array container to catch multi-byte characters safely
+            std::vector<char> piece_buf(-n_chars);
+            n_chars = llama_token_to_piece(vocab, curr_token, piece_buf.data(), piece_buf.size(), 0, true);
 
-            if (check_chars > 0) {
-                output_response.append(piece_buf.data(), check_chars);
+            if (n_chars > 0) {
+                output_response.append(piece_buf.data(), n_chars);
             }
+        } else if (n_chars > 0) {
+            // Text fits into the static 64-bytes stack cache safely
+            output_response.append(static_buf, n_chars);
         }
 
         // Feed current token back to context loop for next iteration phase tracking
