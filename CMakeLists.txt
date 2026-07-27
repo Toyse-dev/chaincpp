@@ -145,6 +145,9 @@ if(BUILD_EXAMPLES)
     )
     target_link_libraries(prompt_example chaincpp)
 
+    add_executable(local_example examples/local_example.cpp)
+    target_link_libraries(local_example chaincpp)
+
     # LLM Example
     add_executable(llm_example examples/llm_example.cpp)
     target_link_libraries(llm_example chaincpp)
