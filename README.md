@@ -57,7 +57,7 @@ ANTHROPIC_API_KEY=sk-ant-xxxx
 ## Core Security Architecture
 
 * **Zero-Interpreter Performance**: Compiles straight to raw machine code with no Python Global Interpreter Lock (GIL), providing predictable under-100ms edge execution.
-* **Kernel-Level Sandboxing**: True multi-process isolation leveraging Linux `fork()` and Windows kernel **Job Objects** to forcefully terminate malicious tool executions at the OS layer.
+* **v0.1: execute_safe (thread timeout) stable. execute_in_process: Linux fork()+RLIMIT working, Windows Job Objects limits implemented, full cross-process func dispatch in v0.2
 * **Memory-Locked Key Protection**: API tokens are pinned in physical RAM using `VirtualLock`/`mlock` with volatile-forced memory scrubbing in destructors to prevent secrets from swapping onto disk.
 * **Prompt Injection Shielding**: Context inputs and multi-turn loops are automatically wrapped within explicit boundary frames and validated using non-regex word-boundary token matching.
 
