@@ -22,6 +22,36 @@ int main() {
 }
 ```
 
+## Quick Start (No API Key or Internet Needed)
+
+`chaincpp` natively embeds `llama.cpp` to run quantized GGUF weights directly on your device with zero cloud dependencies.
+
+```cpp
+#include "chaincpp/models/llm.hpp"
+#include <iostream>
+
+int main() {
+    // Run models fully on-device, offline, completely free
+    auto llm = chaincpp::models::LocalLLM::create({
+        .model_path = "models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+    }).value();
+    
+    auto messages = {chaincpp::models::Message::user("Hello local model!")};
+    auto response = llm->generate(messages, chaincpp::models::ModelConfig{}).value();
+    
+    std::cout << response << "\n";
+}
+```
+
+## Optional: Remote Cloud Models (OpenAI/Anthropic)
+
+To use cloud backends, add your API configurations inside a local `.env` environment layout:
+```bash
+OPENAI_API_KEY=sk-proj-xxxx
+ANTHROPIC_API_KEY=sk-ant-xxxx
+```
+
+
 ---
 
 ## Core Security Architecture
