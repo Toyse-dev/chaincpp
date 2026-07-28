@@ -21,9 +21,7 @@
 
 namespace chaincpp::security {
 
-// ============================================================================
 // Platform-Specific Implementations
-// ============================================================================
 
 #ifdef _WIN32
 class WindowsSandboxImpl {
@@ -74,9 +72,7 @@ public:
 };
 #endif
 
-// ============================================================================
 // Sandbox Implementation
-// ============================================================================
 
 Sandbox::~Sandbox() {
     // Virtual destructor implementation
