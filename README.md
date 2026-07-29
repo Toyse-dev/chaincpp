@@ -1,96 +1,132 @@
 # chaincpp — Security-First LangChain for C++20
 
-A zero-overhead, security-hardened orchestration library for LLMs, Agents, and RAG pipelines. Built for low-latency systems, edge inference, and regulatory enterprise environments.
+A zero-overhead, security-hardened orchestration library for LLMs, Agents, and RAG pipelines. Built for low-latency systems, edge inference, and regulated enterprise environments.
 
-`chaincpp` delivers a defensive baseline with microsecond-level orchestration overhead, eliminating the virtual environments, interpreter startup lag, and deployment vulnerabilities of Python wrappers.
+Compiles to a 20MB static binary, no Python, no venv, no interpreter lag. Runs fully offline.
 
-## 10-Line Hero Snippet
+> **v0.1.0-alpha proven on:** Intel i3-4005U @ 1.70GHz, 8GB DDR3, Intel HD, CPU-only, Windows.
+> Offline Q&A: "What is the capital of Nigeria?" → **"Abuja"** — no API key, no internet.
 
-```cpp
-#include "chaincpp/chaincpp.hpp"
-#include <iostream>
+---
 
-int main() {
-    auto llm = chaincpp::models::OpenAIChat::create().value();
-    auto prompt = chaincpp::core::PromptTemplate::create("Explain {topic} briefly.").value();
-    
-    // Microsecond-level, security-isolated orchestration pipeline
-    auto response = {{"topic", "RAII Memory Management"}} | prompt | *llm;
-    
-    std::cout << response.value() << "\n";
-    return 0;
-}
+## Quick Start (No API Key, No Internet, Free)
+
+`chaincpp` embeds `llama.cpp` and runs quantized GGUF directly on-device.
+
+```bash
+# 1. Download tiny model (~600MB, needs 1.2GB RAM)
+mkdir -p models
+curl -L -o models/tinyllama-1.1b.gguf https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+
+# 2. Build (use -j2 on 2-core i3)
+cmake -B build
+cmake --build build -j2
+
+# 3. Run — fully offline
+./build/examples/local_example
+# Response: Correct Answer: Abuja
 ```
-
-## Quick Start (No API Key or Internet Needed)
-
-`chaincpp` natively embeds `llama.cpp` to run quantized GGUF weights directly on your device with zero cloud dependencies.
 
 ```cpp
 #include "chaincpp/models/llm.hpp"
+#include "chaincpp/core/prompt.hpp"
 #include <iostream>
 
 int main() {
-    // Run models fully on-device, offline, completely free
-    auto llm = chaincpp::models::LocalLLM::create({
-        .model_path = "models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-    }).value();
+    chaincpp::models::LocalLLM::Config cfg;
+    cfg.model_path = "models/tinyllama-1.1b.gguf";
+    cfg.context_size = 512; // low RAM friendly
+    cfg.gpu_layers = 0; // CPU-only, works on i3
     
-    auto messages = {chaincpp::models::Message::user("Hello local model!")};
-    auto response = llm->generate(messages, chaincpp::models::ModelConfig{}).value();
+    auto llm = chaincpp::models::LocalLLM::create(cfg).value();
     
-    std::cout << response << "\n";
+    auto prompt = chaincpp::core::PromptTemplate::create(
+        "<|system|>\nYou are helpful.</s>\n<|user|>\n{question}</s>\n<|assistant|>\n"
+    ).value();
+    
+    auto formatted = prompt.format_safe({{"question", "What is the capital of Nigeria?"}}).value();
+    
+    auto response = llm->generate(
+        {chaincpp::models::Message::user(formatted)},
+        {.max_tokens = 128}
+    ).value();
+    
+    std::cout << response << "\n"; // -> Abuja
 }
 ```
 
-## Optional: Remote Cloud Models (OpenAI/Anthropic)
+---
 
-To use cloud backends, add your API configurations inside a local `.env` environment layout:
+## Optional: Remote Models (OpenAI / Anthropic / OpenRouter)
+
 ```bash
+# .env — never commit this file
 OPENAI_API_KEY=sk-proj-xxxx
 ANTHROPIC_API_KEY=sk-ant-xxxx
+# OpenRouter has free models, no credit card: openrouter.ai
+OPENROUTER_API_KEY=sk-or-xxxx
 ```
 
+```cpp
+#include "chaincpp/models/llm.hpp"
+#include "chaincpp/core/prompt.hpp"
+#include <iostream>
+
+int main() {
+    auto llm = chaincpp::models::OpenAIChat::create().value(); // reads OPENAI_API_KEY
+    auto prompt = chaincpp::core::PromptTemplate::create("Explain {topic} briefly.").value();
+    auto formatted = prompt.format({{"topic", "RAII"}}).value();
+    auto response = llm->generate({chaincpp::models::Message::user(formatted)}).value();
+    std::cout << response << "\n";
+}
+```
 
 ---
 
 ## Core Security Architecture
 
-* **Zero-Interpreter Performance**: Compiles straight to raw machine code with no Python Global Interpreter Lock (GIL), providing predictable under-100ms edge execution.
-* **v0.1: execute_safe (thread timeout) stable. execute_in_process: Linux fork()+RLIMIT working, Windows Job Objects limits implemented, full cross-process func dispatch in v0.2
-* **Memory-Locked Key Protection**: API tokens are pinned in physical RAM using `VirtualLock`/`mlock` with volatile-forced memory scrubbing in destructors to prevent secrets from swapping onto disk.
-* **Prompt Injection Shielding**: Context inputs and multi-turn loops are automatically wrapped within explicit boundary frames and validated using non-regex word-boundary token matching.
+* **Zero-Interpreter**: C++20, no GIL, no venv. Predictable latency for edge.
+* **Execution Isolation**: v0.1 execute_safe with thread timeout + exception boundaries. v0.2: Linux fork()+RLIMIT_AS/CPU+seccomp, Windows Job Objects JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE + JobMemoryLimit (kernel-enforced).
+* **Memory-Locked Secrets**: API keys in secure_string with VirtualLock / mlock + volatile zeroing on destruction. No swap, no core dump.
+* **Prompt Injection Shield**: No regex (prevents ReDoS). Word-boundary token matching blocks ignore previous instructions, system prompt, etc., without false positives on names like "Jordan".
+* **Hardened TLS**: CURLOPT_SSL_VERIFYPEER=1, VERIFYHOST=2, native CA store (CURLSSLOPT_NATIVE_CA on Windows, /etc/ssl/certs/ca-certificates.crt on Linux).
 
 ---
 
 ## Status & Roadmap
 
-`chaincpp` is currently in **v0.1 Alpha**. Core architectures are audited, verified, and stable.
+chaincpp is v0.1.0-alpha — core local + remote inference stable and tested on low-spec hardware.
 
-* [x] **Hardened Remote Models**: OpenAI / Anthropic integration with native OS certificate TLS verification.
-* [x] **Native Local Inference**: Embedded `llama.cpp` weights execution with dynamic token vector sizing.
-* [x] **Safe Document Ingestion**: TextSplitter token formatting with directory traversal block filters.
-* [x] **Agent State Machine**: Complete multi-turn ReAct loops utilizing PIMPL encapsulation layouts.
-* [ ] **Vector Storage Persistence** (v0.2 Roadmap)
-* [ ] **Windows DPAPI Persistent Secrets Storage** (v0.2 Roadmap)
+* [x] Hardened Remote Models (OpenAI / Anthropic) with native TLS
+* [x] Native Local Inference (llama.cpp GGUF) with safe detokenization
+* [x] Safe Document Ingestion (TextSplitter + traversal checks)
+* [x] Agent State Machine (multi-turn ReAct with PIMPL)
+* [x] C ABI (c_api.h) for future Python/Rust/JS bindings
+* [ ] Vector Storage Persistence (v0.2)
+* [ ] DPAPI + libsecret Persistent Secrets (v0.2)
+* [ ] pip install chaincpp via nanobind (v0.2)
 
 ---
 
 ## Build and Verification
 
-`chaincpp` utilizes standard CMake configurations and has zero third-party system dependencies.
+**Dependencies:** libcurl, nlohmann_json, llama.cpp, libsodium (via vcpkg/CMake).
 
 ```bash
-# 1. Generate project build targets cleanly
-cmake -B build -G "MinGW Makefiles"
-
-# 2. Compile libraries, tests, and code examples
-cmake --build build
-
-# 3. Execute the automated regression test tree
+cmake -B build
+cmake --build build -j2
 cd build && ctest --output-on-failure
 ```
 
+---
+
+## Why C++20?
+
+LangChain Python needs 2GB venv and can't run securely offline on 8GB edge devices. chaincpp is 20MB, offline, with mlock secrets and OS-level isolation that Python cannot enforce. Long-term: One secure C++ core, thin wrappers for Python, Rust, Node.
+
+---
+
 ## License
 
-Distributed under the **MIT License**. See `LICENSE` for details.
+Distributed under the **MIT License**. See `LICENSE` for details. 
+Copyright (c) 2026 Toyse-dev.
