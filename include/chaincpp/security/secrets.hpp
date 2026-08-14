@@ -5,10 +5,15 @@
 #include <optional>
 #include <vector>
 #include <cstdint>
+#include <memory>
+#include <functional>
+#include <chrono>
+#include <unordered_map>
+#include <type_traits>
 
 namespace chaincpp::security {
 
-// Secure string that zeros memory on destruction
+// Secure string that zeros memory on destruction - memory pinned
 class secure_string {
 public:
     secure_string() = default;
@@ -22,22 +27,35 @@ public:
     secure_string(secure_string&& other) noexcept;
     secure_string& operator=(secure_string&& other) noexcept;
     
-    const char* c_str() const { return data_.get(); }
-    size_t size() const { return size_; }
-    bool empty() const { return size_ == 0; }
-    
-    std::string to_string() const;
+    [[nodiscard]] const char* c_str() const noexcept { return data_ ? data_.get() : ""; }
+    [[nodiscard]] size_t size() const { return size_; }
+    [[nodiscard]] bool empty() const { return size_ == 0; }
+
+    // Warning: This returns a normal std::string on the heap. It will be swappable and visible in core dumps. Use with caution.
+    // Only use when an API forces you to (e/g/ cURL) and zero the result immediately after.
+    // Prefer with_c_str() below which avoids this copy.
+    [[nodiscard]] std::string to_string() const;
+
+    // Zero-copy accessor - use the secret without ever copying to std::string heap
+    // Example for cURL fix:
+    // key.with_c_str([&](const char* raw){
+    // auto* list = curl_slist_append(nullptr, ("Authorization: Bearer " + std::string(raw)).c_str());
+    // //... curl_easy_perform...
+    // // zero temporary header string immediately after
+    // });
+    template<typename Func>
+    auto with_c_str(Func&& func) const -> std::invoke_result_t<Func, const char*> {
+        return func(data_ ? data_.get() : "");
+    }
     
 private:
-    void zero_memory();
-    
-    std::unique_ptr<char[], void(*)(void*)> data_{nullptr, [](void* p) {
-        if (p) {
-            volatile char* vp = static_cast<volatile char*>(p);
-            for (size_t i = 0; i < 32; ++i) vp[i] = 0;
-            free(p);
-        }
-    }};
+    void zero_memory() noexcept;
+
+    // We malloc in.cpp and free via custom deleter that just calls free
+    struct FreeDeleter {
+        void operator()(char* p) const noexcept { std::free(p);}
+    };
+    std::unique_ptr<char[], FreeDeleter> data_{nullptr};
     size_t size_ = 0;
 };
 
@@ -64,15 +82,9 @@ public:
 private:
     SecretsManager() = default;
 
-    class EncryptionImpl;
-    
     // Platform-specific secure storage
     bool store_secure(const std::string& service, const std::vector<uint8_t>& encrypted);
     std::optional<std::vector<uint8_t>> retrieve_secure(const std::string& service) const;
-    
-    // Simple XOR encryption (obfuscation, not military grade)
-    static std::vector<uint8_t> encrypt(const secure_string& plaintext);
-    static secure_string decrypt(const std::vector<uint8_t>& ciphertext);
     
     // In-memory cache (cleared after use)
     struct CachedKey {
