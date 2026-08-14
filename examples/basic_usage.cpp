@@ -39,11 +39,11 @@ int main() {
     std::cout << "Example 1: Executing safe tool\n";
     std::cout << "----------------------------------------\n";
     
-    auto safe_result = Sandbox::execute_safe(safe_tool_example);
+    auto safe_result = Sandbox::execute_safe(safe_tool_example, SecurityLimits::safe_defaults());
     if (safe_result.is_ok()) {
-        std::cout << "✓ Tool executed successfully\n";
+        std::cout << "Tool executed successfully\n";
     } else {
-        std::cout << "✗ Tool failed: " << safe_result.error() << "\n";
+        std::cout << "Tool failed: " << safe_result.error() << "\n";
     }
     
     // Example 2: Strict limits
@@ -54,9 +54,9 @@ int main() {
     auto strict_result = Sandbox::execute_safe(safe_tool_example, strict_limits);
     
     if (strict_result.is_ok()) {
-        std::cout << "✓ Tool executed within strict limits\n";
+        std::cout << "Tool executed within strict limits\n";
     } else {
-        std::cout << "✗ Tool failed: " << strict_result.error() << "\n";
+        std::cout << "Tool failed: " << strict_result.error() << "\n";
     }
     
     // Example 3: Timeout demonstration
@@ -74,9 +74,9 @@ int main() {
     auto timeout_result = Sandbox::execute_safe(hanging_tool, timeout_limits);
     
     if (timeout_result.is_ok()) {
-        std::cout << "✓ Tool completed before timeout\n";
+        std::cout << "Tool completed before timeout\n";
     } else {
-        std::cout << "⚠ Tool was interrupted: " << timeout_result.error() << "\n";
+        std::cout << "Tool was interrupted: " << timeout_result.error() << "\n";
     }
     
     // Example 4: Demonstrating security boundaries
