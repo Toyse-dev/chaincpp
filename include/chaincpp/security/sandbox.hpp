@@ -136,30 +136,14 @@ struct SecurityLimits {
 
 class Sandbox {
 public:
-    ~Sandbox();
-    
-    static Result<void> execute_safe(
-        std::function<Result<void>()> func,
-        const SecurityLimits& limits = SecurityLimits::safe_defaults()
-    );
-
-     // Process-based sandboxing (safer than threads)
-    static Result<void> execute_in_process(
-        std::function<int()> func,
-        const SecurityLimits& limits
-    );
-    
-    template<typename T>
-    static Result<T> execute_safe_result(
-        std::function<Result<T>()> func,
-        [[maybe_unused]] const SecurityLimits& limits = SecurityLimits::safe_defaults()
-    ) {
-        return func();
-    }
-    
-private:
     Sandbox() = default;
-    
+    ~Sandbox();
+
+    // these should be static in header
+    static Result<void> execute_safe(std::function<Result<void>()> func, const SecurityLimits& limits);
+    static Result<void> execute_in_process(std::function<int()> func, const SecurityLimits& limits);
+
+private:
     static bool set_memory_limit(size_t max_bytes);
     static bool set_time_limit(std::chrono::milliseconds timeout);
     static void sanitize_environment();
