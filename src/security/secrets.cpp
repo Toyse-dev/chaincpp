@@ -10,59 +10,73 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <strings.h>
+#endif
+
+#ifndef explicit_bzero
+#define explicit_bzero sodium_memzero
 #endif
 
 namespace chaincpp::security {
 
-// secure_string - Memory Pinned stack storage
+// secure_string - Memory Pinned zero-on-destruction
 
 secure_string::secure_string(const std::string& str) {
     size_ = str.size();
-    data_.reset(static_cast<char*>(malloc(size_ + 1)));
-    if (data_) {
-        std::memcpy(data_.get(), str.c_str(), size_);
-        data_.get()[size_] = '\0';
-
-        // Lock the memory to prevent swapping to disk
-        #ifdef _WIN32
-            VirtualLock(data_.get(), size_ + 1);
-        #else
-            mlock(data_.get(), size_ + 1);
-        #endif
+    char* raw = static_cast<char*>(std::malloc(size_ + 1));
+    if (raw) {
+        std::memcpy(raw, str.c_str(), size_);
+        raw[size_] = '\0';
+#if defined(_WIN32)
+        VirtualLock(raw, size_ + 1);
+#else
+        ::mlock(raw, size_ + 1);
+#endif
+        data_.reset(raw); //Will be freed manually in dtor, not via delete
     }
 }
 
 secure_string::secure_string(const char* str) {
     if (str) {
         size_ = std::strlen(str);
-        data_.reset(static_cast<char*>(malloc(size_ + 1)));
-        if (data_) {
-            std::memcpy(data_.get(), str, size_);
-            data_.get()[size_] = '\0';
-
+        char* raw = static_cast<char*>(std::malloc(size_ + 1));
+        if (raw) {
+            std::memcpy(raw, str, size_);
+            raw[size_] = '\0';
 #if defined(_WIN32)
-            VirtualLock(data_.get(), size_ + 1);
+            VirtualLock(raw, size_ + 1);
 #else
-            mlock(data_.get(), size_ + 1);
+            ::mlock(raw, size_ + 1);
 #endif
+            data_.reset(raw);
         }
+    } else {
+        size_ = 0;
+        data_.reset(nullptr);
     }
 }
 
 secure_string::~secure_string() {
-    zero_memory();
     if (data_) {
+        #if defined(_WIN32)
+            SecureZeroMemory(data_.get(), size_ + 1);
+        #else
+        // sodium_memzero is guaranteed not to be optimized away
+        sodium_memzero(data_.get(), size_);
+        // clear the null terminator as well
+        sodium_memzero(data_.get() + size_, 1);
+        #endif
+        // Unlock
         #if defined(_WIN32)
             VirtualUnlock(data_.get(), size_ + 1);
         #else
-            munlock(data_.get(), size_ + 1);
+            ::munlock(data_.get(), size_ + 1);
         #endif
+        // Free the malloc buffer - bypass unique_ptr's delete
+        std::free(data_.release());
     }
+    size_ = 0;
 }
-
-// // Prevent copying (only move)
-// secure_string(const secure_string&) = delete;
-// secure_string& operator=(const secure_string&) = delete;
 
 secure_string::secure_string(secure_string&& other) noexcept
     : data_(std::move(other.data_)), size_(other.size_) {
@@ -71,7 +85,17 @@ secure_string::secure_string(secure_string&& other) noexcept
 
 secure_string& secure_string::operator=(secure_string&& other) noexcept {
     if (this != &other) {
-        zero_memory();
+        // zero and free current
+        if (data_) {
+#if defined(_WIN32)
+            SecureZeroMemory(data_.get(), size_);
+            VirtualUnlock(data_.get(), size_ + 1);
+#else
+            sodium_memzero(data_.get(), size_ + 1);
+            ::munlock(data_.get(), size_ + 1);
+#endif
+            std::free(data_.release());
+        }
         data_ = std::move(other.data_);
         size_ = other.size_;
         other.size_ = 0;
@@ -79,19 +103,24 @@ secure_string& secure_string::operator=(secure_string&& other) noexcept {
     return *this;
 }
 
-void secure_string::zero_memory() {
-    if (data_) {
-        // Enforce compiler-optimized clear boundaries using volatile pointers
-        volatile char* vp = static_cast<volatile char*>(data_.get());
-        for (size_t i = 0; i < size_; ++i) {
-            vp[i] = 0;
-        }
+void secure_string::zero_memory() noexcept {
+    if (data_ && size_ > 0) {
+        #if defined(_WIN32)
+            SecureZeroMemory(data_.get(), size_);
+        #else
+            sodium_memzero(data_.get(), size_);
+        #endif
     }
-    size_ = 0;
+    // keep size_ = 0 logic to caller - dtor sets it, but zero_memory alone should NOT reset size_
+    // to allow correct unlock size. Size reset is done in dtor/move.
 }
 
 std::string secure_string::to_string() const {
-    return data_ ? std::string(data_.get(), size_) : std::string();
+     // SECURITY NOTE: This returns a regular std::string on the normal heap.
+    // It WILL be swappable and visible in core dumps. This is unavoidable for
+    // APIs like libcurl that require const char*.
+    // CALLER MUST CLEAR IMMEDIATELY AFTER USE:
+    return data_? std::string(data_.get(), size_) : std::string();
 }
 
 // SecretsManager: Memory pinned cache arechitecture
@@ -117,7 +146,7 @@ Result<void> SecretsManager::store_key(const std::string& service, const secure_
 
     // Explicit assignment bypasses brace-init conversion restrictions
     CachedKey cache_entry;
-    cache_entry.key = secure_string(key.to_string());
+    cache_entry.key = secure_string(key.to_string().c_str());
     cache_entry.timestamp = std::chrono::steady_clock::now();
     cache_[service] = std::move(cache_entry);
 
@@ -140,6 +169,7 @@ Result<secure_string> SecretsManager::get_key(const std::string& service) {
     if (!encrypted.has_value()) {
         return Result<secure_string>::err("Key not found for service: " + service);
     }
+    return Result<secure_string>::err("Persistent storage not implemented in v0.1");
 }
 
 bool SecretsManager::has_key(const std::string& service) const {
@@ -165,19 +195,17 @@ Result<secure_string> SecretsManager::load_from_env(const std::string& env_var) 
     }
 
     secure_string secret(value);
+    // Clear env copy from memory as soon as possible - getenv buffer is owned by OS
     auto store_res = store_key(env_var, secret);
-    if (store_res.is_err()) {
-        return Result<secure_string>::err(store_res.error());
-    }
-    
+    if (store_res.is_err()) return Result<secure_string>::err(store_res.error());
     return Result<secure_string>::ok(std::move(secret));
 }
 
-bool SecretsManager::store_secure([[maybe_unused]] const std::string& service, [[maybe_unused]] const std::vector<uint8_t>& encrypted) {
-    return false; // Deprecated file backup operations safely blocked for v0.1 security parameters
+bool SecretsManager::store_secure([[maybe_unused]] const std::string&, [[maybe_unused]] const std::vector<uint8_t>&) {
+    return false; // v0.1: no persistent storage - in-memory cache only
 }
 
-std::optional<std::vector<uint8_t>> SecretsManager::retrieve_secure([[maybe_unused]] const std::string& service) const {
+std::optional<std::vector<uint8_t>> SecretsManager::retrieve_secure([[maybe_unused]] const std::string&) const {
     return std::nullopt; // Deprecated file backup operations safely blocked for v0.1 security parameters
 }
 
@@ -186,7 +214,7 @@ void SecretsManager::cleanup_cache() {
     auto now = std::chrono::steady_clock::now();
     for (auto it = cache_.begin(); it != cache_.end();) {
         if (now - it->second.timestamp > CACHE_TTL) {
-            it = cache_.erase(it);
+            it = cache_.erase(it); // secure_string dtor zeroes
         } else {
             ++it;
         }
@@ -202,8 +230,6 @@ KeyGuard::KeyGuard(const std::string& service) {
     }
 }
 
-KeyGuard::~KeyGuard() {
-    // key_ automatically zeroed on destruction
-}
+KeyGuard::~KeyGuard() = default;
 
 }
