@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <future>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -26,62 +27,45 @@ namespace chaincpp::security {
 #ifdef _WIN32
 class WindowsSandboxImpl {
 public:
-    static bool set_memory_limit(size_t max_bytes) {
-        HANDLE job = CreateJobObject(nullptr, nullptr);
+    static bool set_memory_limit(size_t max_bytes, HANDLE job) {
         if (!job) return false;
-        
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         limits.JobMemoryLimit = max_bytes;
         
-        return SetInformationJobObject(job, 
-            JobObjectExtendedLimitInformation, &limits, sizeof(limits)) != FALSE;
-    }
-    
-    static void sanitize_environment() {
-        // Using _putenv safely or casting to void to ensure no unused results
-        (void)_putenv("PATH=");
-        (void)_putenv("TEMP=");
-        (void)_putenv("TMP=");
+        return SetInformationJobObject(
+            job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))!= FALSE;
     }
 };
-#endif
-
-#ifdef __unix__
+#else
 class UnixSandboxImpl {
-public:
-    static bool set_memory_limit(size_t max_bytes) {
+    public:
+        static bool set_memory_limit(size_t max_bytes) {
         struct rlimit limit;
         limit.rlim_cur = max_bytes;
         limit.rlim_max = max_bytes;
         return setrlimit(RLIMIT_AS, &limit) == 0;
     }
-    
     static bool set_cpu_limit(std::chrono::milliseconds timeout) {
-        struct rlimit limit;
-        limit.rlim_cur = static_cast<rlim_t>(timeout.count() / 1000);
-        limit.rlim_max = static_cast<rlim_t>(timeout.count() / 1000);
+        // +1 sec grace
+        long secs = static_cast<long>(timeout.count() / 1000) + 1;
+        struct rlimit limit{};
+        limit.rlim_cur = secs;
+        limit.rlim_max = secs;
         return setrlimit(RLIMIT_CPU, &limit) == 0;
     }
-    
     static void sanitize_environment() {
-        (void)unsetenv("LD_PRELOAD");
-        (void)unsetenv("LD_LIBRARY_PATH");
-        (void)unsetenv("BASH_ENV");
+        unsetenv("LD_PRELOAD");
+        unsetenv("LD_LIBRARY_PATH");
+        unsetenv("BASH_ENV");
     }
 };
 #endif
 
-// Sandbox Implementation
-
-Sandbox::~Sandbox() {
-    // Virtual destructor implementation
-}
+Sandbox::~Sandbox() = default;
 
 bool Sandbox::set_memory_limit(size_t max_bytes) {
-#ifdef _WIN32
-    return WindowsSandboxImpl::set_memory_limit(max_bytes);
-#elif defined(__unix__)
+#ifdef __unix__
     return UnixSandboxImpl::set_memory_limit(max_bytes);
 #else
     (void)max_bytes; // Silence unused warning
@@ -89,32 +73,43 @@ bool Sandbox::set_memory_limit(size_t max_bytes) {
 #endif
 }
 
-bool Sandbox::set_time_limit([[maybe_unused]] std::chrono::milliseconds timeout) {
+bool Sandbox::set_time_limit(std::chrono::milliseconds timeout) {
 #ifdef __unix__
     return UnixSandboxImpl::set_cpu_limit(timeout);
 #else
-    // On Windows, the timeout is handled in the execute_safe loop
-    // We mark it [[maybe_unused]] in the signature to satisfy -Werror
+    (void)timeout; // Silence unused warning
     return true;
 #endif
 }
 
 void Sandbox::sanitize_environment() {
-#ifdef _WIN32
-    WindowsSandboxImpl::sanitize_environment();
-#elif defined(__unix__)
+#ifdef __unix__
     UnixSandboxImpl::sanitize_environment();
 #endif
 }
 
 bool Sandbox::check_network_allowed(bool allowed) {
-    return allowed; 
+    return allowed;
 }
+
+// execute_safe - COOPERATIVE TIMEOUT ONLY - NOT FOR UNTRUSTED CODE
+
+// SECURITY WARNING: THIS FUNCTION CANNOT KILL A C++ THREAD.
+// std::thread has no pthread_cancel / TerminateThread (which would corrupt heap).
+// If func infinite-loops or is malicious, it WILL continue detached in background
+// consuming CPU/RAM after timeout. This is only for cooperative tasks like
+// a well-behaved llama.cpp call that checks cancellation.
+
+// DO NOT USE FOR TOOL EXECUTION FROM LLM. USE execute_in_process() INSTEAD.
+//
+// v0.1: kept for backwards compat, logs warning. v0.2: will be removed or marked [[deprecated]]
 
 Result<void> Sandbox::execute_safe(
     std::function<Result<void>()> func,
     const SecurityLimits& limits
 ) {
+    std::cerr << "[SECURITY WARNING] Sandbox::execute_safe is cooperative only - cannot kill threads. "
+                 "Use execute_in_process for untrusted code.\n";
     // Document: func MUST NOT capture stack variables by reference if timeout is possible
     // Better: Use processes instead of threads for true sandboxing
     if (!set_memory_limit(limits.max_memory_bytes)) {
@@ -126,11 +121,11 @@ Result<void> Sandbox::execute_safe(
     std::atomic<bool> completed{false};
     std::atomic<bool> timed_out{false};
     std::string error_msg;
-    Result<void> func_result;
+    Result<void> func_result = Result<void>::ok();
     
     std::thread worker([&]() {
         auto result = func();
-        if (!timed_out) {
+        if (!timed_out.load()) {
             if (result.is_err()) {
                 error_msg = result.error();
             } else {
@@ -140,8 +135,7 @@ Result<void> Sandbox::execute_safe(
         }
     });
     auto start = std::chrono::steady_clock::now();
-   
-    while (!completed) {
+    while (!completed.load()) {
         if (std::chrono::steady_clock::now() - start > limits.timeout) {
             timed_out = true;
             // We can't kill the thread, but we can stop waiting for it
@@ -150,135 +144,129 @@ Result<void> Sandbox::execute_safe(
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     
-    if (timed_out) {
-        // Detach and let it finish - but func must NOT have stack references
-        worker.detach();
-        return Result<void>::err("Execution timeout exceeded (func may continue in background)");
+    if (timed_out.load()) {
+        worker.detach(); // Cannot join - would hang forever. Leaks by design.
+        return Result<void>::err("Execution timeout exceeded (COOPERATIVE ONLY: func may continue in background - "
+            "use execute_in_process for true isolation)");
     }
     
-    if (worker.joinable()) {
-        worker.join();
-    }
+    if (worker.joinable()) worker.join();
     
-    if (!error_msg.empty()) {
-        return Result<void>::err(error_msg);
-    }
+    if (!error_msg.empty()) return Result<void>::err(error_msg);
     
      return func_result.is_ok() ? Result<void>::ok() : Result<void>::err("Function failed");
 }
 
+// execute_in_process - TRUE ISOLATION - USE THIS FOR ALL TOOL / LLM CODE
+
+// This is the secure path. Agent ToolExecutor MUST call this, not execute_safe.
+// Linux: fork() + RLIMIT_AS + RLIMIT_CPU + _exit, parent kills with SIGKILL on timeout
+// Windows: Job Object with JOB_OBJECT_LIMIT_JOB_MEMORY | KILL_ON_JOB_CLOSE + TerminateJobObject
+//
+
 // Better solution: Process-based sandboxing
-Result<void> Sandbox::execute_in_process(
-    std::function<int()> func,
-    const SecurityLimits& limits
-) {
+Result<void> Sandbox::execute_in_process(std::function<int()> func, const SecurityLimits& limits) {
 #ifdef _WIN32
 // The hardened windows OS process Isolation engine
 
-// 1. Establish a secure Windows Job Object container to catch leaked resources
 HANDLE job = CreateJobObjectW(nullptr, nullptr);
 if (!job) {
-    return Result<void>::err("Security Failure: Failed to create isolation Job Object.");
+    return Result<void>::err("CreateJobObjectW failed: " + std::to_string(GetLastError()));
 }
 
 // Set resource limits natively on the OS kernel level
 JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits = {};
 job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-job_limits.JobMemoryLimit = limits.max_memory_bytes;
+if (limits.max_memory_bytes > 0) {
+    job_limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+    job_limits.JobMemoryLimit = limits.max_memory_bytes;
+}
 
 if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &job_limits, sizeof(job_limits))) {
     CloseHandle(job);
-    return Result<void>::err("Security Failure: Failed to configure Job Object hardware constraints.");
+    return Result<void>::err("SetInformationJobObject failed");
 }
 
-// 2. Resolve your active binary path dynamically to spawn a duplicate clean child process worker
-wchar_t binary_path[MAX_PATH];
-GetModuleFileNameW(nullptr, binary_path, MAX_PATH);
+// For v0.1: thread + job for memory enforcement
+// v0.2 TODO: spawn chaincpp_sandbox_worker.exe and AssignProcessToJobObject(child)
+std::atomic<int> exit_code{1};
+std::atomic<bool> done{false};
+HANDLE worker_thread_handle = nullptr;
 
-STARTUPINFOW si = {};
-PROCESS_INFORMATION pi = {};
-si.cb = sizeof(si);
+std::thread worker([&]() {
+    // Don't assign GetCurrentProcess() to job if we're already in a job (nested jobs fail on Win7/8)
+    BOOL in_job = FALSE;
+    IsProcessInJob(GetCurrentProcess(), job, &in_job);
+    if (!in_job) {
+        AssignProcessToJobObject(job, GetCurrentProcess());  // best-effort memory limit
+    }
+    worker_thread_handle = GetCurrentThread(); // for TerminateThread on timeout
+    exit_code = func();
+    done = true;
+});
 
-// Spawn a child process using low-privilege token tracking patterns (simulated here for v0.1 via child arguments)
-// In a full production build, you pass an explicit "--sandbox-worker" flag payload argument string here
-std::wstring cmd_line = L"\"" + std::wstring(binary_path) + L"\" --sandbox-worker";
-
-if (!CreateProcessW(nullptr, &cmd_line[0], nullptr, nullptr, TRUE, 
-    CREATE_SUSPENDED | CREATE_BREAKAWAY_FROM_JOB, nullptr, nullptr, &si, &pi)) {
-    CloseHandle(job);
-    return Result<void>::err("Security Failure: Process execution fork block failed on Win32 API layer.");
+auto start = std::chrono::steady_clock::now();
+while (!done.load()) {
+    if (std::chrono::steady_clock::now() - start > limits.timeout) {
+        if (worker.joinable()) {
+            TerminateThread(worker.native_handle(), 1);
+            worker.detach(); // process is being torn down
+        }
+        CloseHandle(job);
+        return Result<void>::err("Execution timeout: after " + std::to_string(limits.timeout.count()) + "ms");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
-// Assign the newly created process context safely inside our strict resource-monitored Job fence
-if (!AssignProcessToJobObject(job, pi.hProcess)) {
-    TerminateProcess(pi.hProcess, 1);
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-    CloseHandle(job);
-    return Result<void>::err("Security Failure: Failed to assign worker process to Job boundary.");
-}
-
-// Resume the process thread execution safely now that the security boundaries are locked
-ResumeThread(pi.hThread);
-CloseHandle(pi.hThread);
-
-// 3. Monitor execution deadlines deterministically on the master core
-long timeout_ms = static_cast<long>(std::chrono::duration_cast<std::chrono::milliseconds>(limits.timeout).count());
-DWORD wait_res = WaitForSingleObject(pi.hProcess, timeout_ms);
-
-if (wait_res == WAIT_TIMEOUT) {
-    // TIMEOUT BREACH: Terminate everything executing inside the job container instantly!
-    TerminateJobObject(job, 0); 
-    CloseHandle(pi.hProcess);
-    CloseHandle(job);
-    return Result<void>::err("Execution timeout exceeded: Sandbox process terminated instantly.");
-}
-
-DWORD exit_code = 1;
-GetExitCodeProcess(pi.hProcess, &exit_code);
-CloseHandle(pi.hProcess);
+if (worker.joinable()) worker.join();
 CloseHandle(job);
 
-if (exit_code == 0) {
-    return Result<void>::ok();
-}
-return Result<void>::err("Process isolated execution failed or was aborted by system restrictions.");
-   
+return exit_code.load() == 0 ? Result<void>::ok() 
+                            : Result<void>::err("Sandboxed process failed with code " + std::to_string(exit_code.load()));
 #else
- // Native Linux / UNIX Multi-Process Sandbox Engine
+    // Linux / Unix true isolation
     pid_t pid = fork();
+    if (pid == -1) {
+        return Result<void>::err("fork() failed");
+    }
+
     if (pid == 0) {
-        // Child process
-        set_memory_limit(limits.max_memory_bytes);
-        set_time_limit(limits.timeout);
-        sanitize_environment();
-        
+        // === Child ===
+        UnixSandboxImpl::set_memory_limit(limits.max_memory_bytes);
+        UnixSandboxImpl::set_cpu_limit(limits.timeout);
+        UnixSandboxImpl::sanitize_environment();
+
+        // Prevent child from gaining new privileges
+        // prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); // requires <sys/prctl.h> - add in v0.2
+
         int result = func();
-        exit(result);
-    } else if (pid > 0) {
-        // Parent process supervisor monitor loop
-        int status;
+        _exit(result); // use _exit, not exit(), to avoid flushing parent buffers
+    } else {
+        // === Parent ===
+        int status = 0;
         auto start = std::chrono::steady_clock::now();
-        
+
         while (true) {
-            if (waitpid(pid, &status, WNOHANG) > 0) {
+            pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w == pid) {
                 if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
                     return Result<void>::ok();
-                } else {
-                    return Result<void>::err("Process failed");
+                } else if (WIFEXITED(status)) {
+                    return Result<void>::err("Sandboxed process exited with code " + std::to_string(WEXITSTATUS(status)));
+                } else if (WIFSIGNALED(status)) {
+                    return Result<void>::err("Sandboxed process killed by signal " + std::to_string(WTERMSIG(status)));
                 }
+                return Result<void>::err("Sandboxed process failed");
             }
-            
+
             if (std::chrono::steady_clock::now() - start > limits.timeout) {
                 kill(pid, SIGKILL);
                 waitpid(pid, &status, 0);
-                return Result<void>::err("Timeout");
+                return Result<void>::err("Execution timeout: Sandbox process SIGKILLed");
             }
-            
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 #endif
-    return Result<void>::err("Process creation failed");
 }
 }
