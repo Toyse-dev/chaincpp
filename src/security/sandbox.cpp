@@ -209,7 +209,7 @@ auto start = std::chrono::steady_clock::now();
 while (!done.load()) {
     if (std::chrono::steady_clock::now() - start > limits.timeout) {
         if (worker.joinable()) {
-            TerminateThread(worker.native_handle(), 1);
+            TerminateThread((HANDLE)worker.native_handle(), 1);
             worker.detach(); // process is being torn down
         }
         CloseHandle(job);
