@@ -1,4 +1,5 @@
 #include "chaincpp/models/llm.hpp"
+#include "chaincpp/security/secrets.hpp"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 
@@ -14,14 +15,13 @@
 #include <random>
 #include <cmath>
 #include <limits>
+#include <sodium.h>
 
 using json = nlohmann::json;
 
 namespace chaincpp::models {
 
-// Core Heuristics and Utilities
-
-// Heuristic fallback token tracking to prevent zero-division rate limits
+// Heuristic fallback only for OpenAI/Anthropic. LocalLLM uses real tokenizer
 size_t count_tokens(const std::string& text) {
     if (text.empty()) return 0;
     // v0.1 heuristic fallback: prevent truncation to 0 for single characters
@@ -35,7 +35,6 @@ Message Message::assistant(std::string content) { return {Role::ASSISTANT, std::
 Message Message::tool(std::string content, std::string name) { return {Role::TOOL, std::move(content), std::move(name)}; }
 
 // Network Layer (Hardened cURL Engine)
-
 struct CurlGlobalInit {
     CurlGlobalInit() { curl_global_init(CURL_GLOBAL_ALL); }
     ~CurlGlobalInit() { curl_global_cleanup(); }
@@ -56,7 +55,7 @@ size_t secure_write_callback(void* contents, size_t size, size_t nmemb, void* us
 
     std::string_view chunk(static_cast<const char*>(contents), total_size);
 
-    // Fix bug 2: safe exception boundaries on downstream callback
+    // safe exception boundaries on downstream callback
     if (payload->stream_callback && *(payload->stream_callback)) {
         try {
             (*(payload->stream_callback))(chunk);
@@ -138,14 +137,14 @@ security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create(Config cfg) {
     chat->config_ = std::move(cfg);
     return security::Result<std::unique_ptr<OpenAIChat>>::ok(std::move(chat));
 }
-
 OpenAIChat::~OpenAIChat() = default;
 
 // Overload 1: Satisfies the pure virtual interface contract for BaseLLM
 security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, const ModelConfig& config) {
     json body = {
-        {"model", config.model_name},
-        {"temperature", config.temperature}
+        {"model", config.model_name.empty()? "gpt-4o-mini" : config.model_name},
+        {"temperature", config.temperature},
+        {"max_tokens", config.max_tokens}
     };
 
     json json_messages = json::array();
@@ -161,13 +160,19 @@ security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& m
     }
     body["messages"] = json_messages;
 
-    std::string auth = "Authorization: Bearer " + api_key_.to_string();
-    return execute_secure_request(config_.base_url + "/chat/completions", body.dump(), auth, config.timeout);
+    std::string auth;
+    api_key_.with_c_str([&](const char* raw){
+        auth = "Authorization: Bearer " + std::string(raw);
+    });
+    auto res = execute_secure_request(config_.base_url + "/chat/completions", body.dump(), auth, config.timeout);
+    sodium_memzero(auth.data(), auth.size()); // Zero sensitive memory immediately after use
+    return res;
 }
 
 // Overload 2: Satisfies localized streaming API execution loop
 security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
     ModelConfig default_cfg;
+    default_cfg.model_name = "gpt-4o-mini";
     if (stream_cb) {
         return stream_generate(messages, stream_cb, default_cfg).is_ok() 
             ? security::Result<std::string>::ok("[Streaming Completed]")
@@ -183,7 +188,8 @@ security::Result<void> OpenAIChat::stream_generate(
     const ModelConfig& config
 ) {
     json body = {
-        {"model", config.model_name},
+        {"model", config.model_name.empty()? "gpt-4o-mini" : config.model_name},
+        {"max_tokens", config.max_tokens},
         {"temperature", config.temperature},
         {"stream", true}
     };
@@ -201,9 +207,12 @@ security::Result<void> OpenAIChat::stream_generate(
     }
     body["messages"] = json_messages;
 
-    std::string auth = "Authorization: Bearer " + api_key_.to_string();
+    std::string auth;
+    api_key_.with_c_str([&](const char* raw){
+        auth = "Authorization: Bearer " + std::string(raw);
+    });
     auto res = execute_secure_request(config_.base_url + "/chat/completions", body.dump(), auth, config.timeout, &on_chunk);
-    
+    sodium_memzero(auth.data(), auth.size()); // Zero sensitive memory immediately after use
     if (res.is_err()) return security::Result<void>::err(res.error());
     return security::Result<void>::ok();
 }
@@ -213,7 +222,6 @@ security::Result<void> OpenAIChat::stream_generate(
 security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create() { 
     return create(Config()); 
 }
-
 security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create(Config cfg) {
     auto key_res = security::SecretsManager::instance().load_from_env(cfg.api_key_env_var);
     if (key_res.is_err()) return security::Result<std::unique_ptr<AnthropicChat>>::err(key_res.error());
@@ -226,47 +234,83 @@ security::Result<std::unique_ptr<AnthropicChat>> AnthropicChat::create(Config cf
 
 AnthropicChat::~AnthropicChat() = default;
 
-// Overload 1: Satisfies the pure virtual interface contract for BaseLLM (Line 57)
 security::Result<std::string> AnthropicChat::generate(const std::vector<Message>& messages, const ModelConfig& config) {
-    (void)config;
-    return generate(messages, nullptr);
-}
+    std::string model_to_use = config.model_name.empty()? "claude-3-5-sonnet-20241022" : config.model_name;
+    if (model_to_use.rfind("gpt",0)==0 || model_to_use.rfind("o1",0)==0) {
+        model_to_use = "claude-3-5-sonnet-20241022";
+    }
 
-// Overload 2: Satisfies your localized streaming API execution loop (Line 124)
-security::Result<std::string> AnthropicChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
     json body = {
-        {"model", "gpt-4o"},
-        {"max_tokens", 4096},
-        {"temperature", 0.7}
+        {"model", model_to_use},
+        {"max_tokens", config.max_tokens>0? config.max_tokens : 4096},
+        {"temperature", config.temperature}
     };
 
-    // Fix Bug 3: Modern full multi-turn conversation array compilation tracking
-    std::string system_prompt = "";
+    std::string system_prompt;
     json json_messages = json::array();
-
     for (const auto& msg : messages) {
-        if (msg.role == Message::Role::SYSTEM) {
-            system_prompt = msg.content; // Anthropic passes system context as a top-level flag
-        } else {
-            std::string role_str = (msg.role == Message::Role::ASSISTANT) ? "assistant" : "user";
+        if (msg.role == Message::Role::SYSTEM) system_prompt = msg.content;
+        else {
+            std::string role_str = (msg.role == Message::Role::ASSISTANT)? "assistant" : "user";
             json_messages.push_back({{"role", role_str}, {"content", msg.content}});
         }
     }
-
     if (!system_prompt.empty()) body["system"] = system_prompt;
     body["messages"] = json_messages;
 
-    std::string auth = "X-API-Key: " + api_key_.to_string(); // Anthropic custom header
+    std::string auth_header;
+    api_key_.with_c_str([&](const char* raw){ auth_header = "x-api-key: " + std::string(raw); });
 
-    auto res = execute_secure_request(config_.base_url + "/v1/messages", body.dump(), auth, std::chrono::seconds(30), stream_cb ? &stream_cb : nullptr);
-    body["model"] = "claude-3-5-sonnet";
+    auto timeout = config.timeout.count()>0? config.timeout : std::chrono::seconds(30);
+    auto res = execute_secure_request(config_.base_url + "/v1/messages", body.dump(), auth_header, timeout);
+    sodium_memzero(auth_header.data(), auth_header.size());
+
     if (res.is_err()) return res;
-    
     try {
         auto parsed = json::parse(res.value());
         return security::Result<std::string>::ok(parsed["content"][0]["text"].get<std::string>());
     } catch (...) {
-        return security::Result<std::string>::err("Failed parsing Anthropic payload response structures");
+        return security::Result<std::string>::err("Failed parsing Anthropic response");
+    }
+}
+
+security::Result<std::string> AnthropicChat::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
+    ModelConfig cfg;
+    cfg.model_name = "claude-3-5-sonnet-20241022";
+    cfg.max_tokens = 4096;
+    cfg.temperature = 0.7f;
+    cfg.timeout = std::chrono::seconds(30);
+
+    json body = {
+        {"model", cfg.model_name},
+        {"max_tokens", cfg.max_tokens},
+        {"temperature", cfg.temperature}
+    };
+    std::string system_prompt;
+    json json_messages = json::array();
+    for (const auto& msg : messages) {
+        if (msg.role == Message::Role::SYSTEM) system_prompt = msg.content;
+        else {
+            std::string role_str = (msg.role == Message::Role::ASSISTANT)? "assistant" : "user";
+            json_messages.push_back({{"role", role_str}, {"content", msg.content}});
+        }
+    }
+    if (!system_prompt.empty()) body["system"] = system_prompt;
+    body["messages"] = json_messages;
+
+    std::string auth_header;
+    api_key_.with_c_str([&](const char* raw){ auth_header = "x-api-key: " + std::string(raw); });
+
+    auto res = execute_secure_request(config_.base_url + "/v1/messages", body.dump(), auth_header, cfg.timeout, stream_cb? &stream_cb : nullptr);
+    sodium_memzero(auth_header.data(), auth_header.size());
+
+    if (res.is_err()) return res;
+    try {
+        auto parsed = json::parse(res.value());
+        if (stream_cb) return security::Result<std::string>::ok("[Streaming]");
+        return security::Result<std::string>::ok(parsed["content"][0]["text"].get<std::string>());
+    } catch (...) {
+        return security::Result<std::string>::err("Failed parsing Anthropic response");
     }
 }
 
@@ -275,19 +319,24 @@ security::Result<void> AnthropicChat::stream_generate(
     StreamCallback on_chunk,
     const ModelConfig& config
 ) {
-    (void)config; 
-    auto result = generate(messages, on_chunk);
-    if (result.is_ok()) return security::Result<void>::ok();
+    auto result = generate(messages, config.model_name.empty()? ModelConfig{} : config);
+    if (result.is_ok()) {
+        if (on_chunk) {
+            on_chunk(result.value());
+        }
+        return security::Result<void>::ok();
+    }
     return security::Result<void>::err(result.error());
 }
 
 // LocalLLM Engine Private Implementation
-
 static void ensure_llama_backend_init() {
     // Global thread-safe backend allocation fence
     static std::once_flag init_flag;
     std::call_once(init_flag, []() {
         llama_backend_init();
+        // Free at process exit, not leak per-instance
+        std::atexit([]() { llama_backend_free(); });
     });
 }
 
@@ -309,22 +358,27 @@ public:
             llama_context_params ctx_params = llama_context_default_params();
             ctx_params.n_ctx = config_.context_size;
             ctx_params.n_batch = 512;
-            
             ctx_ = llama_init_from_model(model_, ctx_params);
         }
     }
 
     ~Impl() {
-        if (ctx_) {
-            llama_free(ctx_);
-        }
-        if (model_) {
-            llama_model_free(model_);
-        }
+        if (ctx_) llama_free(ctx_);
+        if (model_) llama_model_free(model_);
+        // no llama_backend_free here - handled by atexit
         // Global llama_backend_free completely removed from instance destructor to fix memory corruption crashes;
     }
 
     bool is_ready() const { return model_ != nullptr && ctx_ != nullptr; }
+
+    size_t count_tokens_real(const std::string& text) const {
+        if (!model_) return std::max(size_t(1), text.length() / 4);
+        const struct llama_vocab* vocab = llama_model_get_vocab(model_);
+        if (!vocab) return std::max(size_t(1), text.length() / 4);
+        int n = llama_tokenize(vocab, text.c_str(), text.size(), nullptr, 0, true, true);
+        if (n < 0) n = n;
+        return n > 0 ? (size_t)n : std::max(size_t(1), text.length() / 4);
+    }
     
     security::Result<std::string> generate([[maybe_unused]] const std::vector<Message>& messages, const ModelConfig& config) {
         if (!is_ready()) {
@@ -355,7 +409,7 @@ public:
         }
 
         // Native autoregressive llama_decode evaluation token stream sampler loop
-        std::string output_response = "";
+        std::string output_response;
         struct llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
         
         if (llama_decode(ctx_, batch) != 0) {
@@ -365,10 +419,14 @@ public:
         // Initialize random engine natively using our thread-safe random configurations
         std::random_device rd;
         std::mt19937 gen(rd());
+        std::uniform_real_distribution<float> uniform_dist(0.0f, 1.0f);
 
         llama_token curr_token = 0;
-        int max_generation_tokens = std::min(static_cast<int>(config.max_tokens), 4096);
+        int max_generation_tokens = std::min(static_cast<int>(config.max_tokens>0? config.max_tokens : 512), 4096);
         int vocab_size = llama_vocab_n_tokens(vocab);
+
+        // Reuse buffer, don't reallocate each iteration, for performance
+        if ((int)tmp_probs_.size() != vocab_size) tmp_probs_.resize(vocab_size);
 
         for (int i = 0; i < max_generation_tokens; ++i) {
             auto logits = llama_get_logits_ith(ctx_, batch.n_tokens - 1);
@@ -394,19 +452,25 @@ public:
                 }
 
                 // Randomly sample token based on computed Softmax probability weights
-                 std::discrete_distribution<int> dist(scaled_probs.begin(), scaled_probs.end());
-                 curr_token = static_cast<llama_token>(dist(gen));
+                 float r = std::uniform_real_distribution<float>(0.0f, 1.0f)(gen);
+                 float cumsum = 0.0f;
+                 curr_token = vocab_size - 1; // Default to last token if sampling fails
+                 for (int v = 0; v < vocab_size; ++v) {
+                     cumsum += scaled_probs[v];
+                     if (r < cumsum) {
+                         curr_token = v;
+                         break;
+                     }
+                 }
             } else {
                 // Fallback to greedy deterministic search when temperature is 0
                 curr_token = std::distance(logits, std::max_element(logits, logits + vocab_size));
         }
 
-        if (curr_token == llama_vocab_eos(vocab)) {
-            break; // End of sequence encountered cleanly
-        }
+        if (curr_token == llama_vocab_eos(vocab)) break; // End of sequence encountered cleanly
         
         // Dynamic sizing pass to prevent silent truncation on large/multi-byte token
-        char static_buf[64];
+        char static_buf[128]; // 128 bytes static stack buffer for token piece conversion
         int n_chars = llama_token_to_piece(vocab, curr_token, static_buf, sizeof(static_buf), 0, true);
         if (n_chars < 0) {
             // Allocate a dynamic temporary vector array container to catch multi-byte characters safely
@@ -417,15 +481,13 @@ public:
                 output_response.append(piece_buf.data(), n_chars);
             }
         } else if (n_chars > 0) {
-            // Text fits into the static 64-bytes stack cache safely
+            // Text fits into the static 128-bytes stack cache safely
             output_response.append(static_buf, n_chars);
         }
 
         // Feed current token back to context loop for next iteration phase tracking
         batch = llama_batch_get_one(&curr_token, 1);
-        if (llama_decode(ctx_, batch) != 0) {
-            break;
-        }
+        if (llama_decode(ctx_, batch) != 0) break;
     }
 
         return security::Result<std::string>::ok(std::move(output_response));
@@ -435,11 +497,15 @@ private:
     LocalLLM::Config config_;
     llama_model* model_ = nullptr;
     llama_context* ctx_ = nullptr;
+    std::vector<float> tmp_probs_; // Temporary buffer for probability calculations
 };
 
 security::Result<std::unique_ptr<LocalLLM>> LocalLLM::create(Config cfg) {
     auto llm = std::unique_ptr<LocalLLM>(new LocalLLM());
     llm->impl_ = std::make_unique<Impl>(cfg);
+    if (!llm->impl_->is_ready()) {
+        return security::Result<std::unique_ptr<LocalLLM>>::err("Failed to load GGUF model");
+    }
     return security::Result<std::unique_ptr<LocalLLM>>::ok(std::move(llm));
 }
 
@@ -453,27 +519,28 @@ security::Result<std::string> LocalLLM::generate(const std::vector<Message>& mes
 
 // Overload 2: Satisfies the specialized signature pattern (Line 186 in llm.hpp)
 security::Result<std::string> LocalLLM::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
+    ModelConfig default_config;
+    default_config.max_tokens = 512;
     std::string result_str;
     std::string error_msg;
     bool success = false;
-    ModelConfig default_config;
 
-    // Route safely through your verified execute_safe Sandbox method loop
-    auto run_res = security::Sandbox::execute_safe([&]() -> security::Result<void> {
+    // Route safely through your verified execute_in_process Sandbox method loop
+    auto run_res = security::Sandbox::execute_in_process([&]() -> int {
         auto gen_res = impl_->generate(messages, default_config);
         if (gen_res.is_ok()) {
             result_str = gen_res.value();
+            if (stream_cb) stream_cb(result_str);
             success = true;
-            return security::Result<void>::ok();
+            return 0;
         } else {
             error_msg = gen_res.error();
-            return security::Result<void>::err(error_msg);
+            return 1;
         }
     }, security::SecurityLimits::strict());
 
-    if (!run_res.is_ok()) return security::Result<std::string>::err(run_res.error());
+    if (run_res.is_err()) return security::Result<std::string>::err(run_res.error());
     if (!success) return security::Result<std::string>::err(error_msg);
-    
     return security::Result<std::string>::ok(std::move(result_str));
 }
 
@@ -482,11 +549,10 @@ security::Result<void> LocalLLM::stream_generate(
     StreamCallback on_chunk,
     const ModelConfig& config
 ) {
-    (void)config;
     // Explicitly pass nullptr to select overload 2 unambiguously
     auto result = generate(messages, nullptr);
     if (result.is_ok()) {
-        on_chunk(result.value());
+        if (on_chunk) on_chunk(result.value());
         return security::Result<void>::ok();
     }
     return security::Result<void>::err(result.error());
