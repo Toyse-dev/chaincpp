@@ -73,7 +73,7 @@ security::Result<std::string> Tool::execute(const std::string& input) {
 
     auto limits = security::SecurityLimits::safe_defaults();
     limits.timeout = caps_.timeout;
-    limits.max_memory_bytes = 100 * 1024;
+    limits.max_memory_bytes = 100 * 1024 * 1024;
     limits.allow_network = caps_.needs_network;
     limits.allow_filesystem = caps_.needs_filesystem;
 
@@ -214,9 +214,23 @@ Tool create_time_tool() {
     caps.requires_approval = false;
     auto func = [](const std::string&) -> security::Result<std::string> {
         auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
+        auto time_t_val = std::chrono::system_clock::to_time_t(now);
+        std::tm tm_buf{};
+    #ifdef _WIN32
+        if (localtime_s(&tm_buf, &time_t_val) != 0) {
+            return security::Result<std::string>::err("localtime_s failed");
+        }
+    #else
+        if (localtime_r(&time_t_val, &tm_buf) == nullptr) {
+            return security::Result<std::string>::err("localtime_r failed");
+        }
+    #endif
+        char buf[64];
+        if (std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf) == 0) {
+            return security::Result<std::string>::err("strftime failed");
+        }
         std::stringstream ss;
-        ss << "Current time: " << std::put_time(std::localtime(&time_t), "%Y-%m-%d %H:%M:%S");
+        ss<< "Current time: " << buf;
         return security::Result<std::string>::ok(ss.str());
     };
     return Tool::create("get_current_time","Get the current system date and time",func,caps,R"({"type": "object", "properties": {}})").value();
