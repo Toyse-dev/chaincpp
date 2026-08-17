@@ -84,7 +84,7 @@ security::Result<std::string> Tool::execute(const std::string& input) {
         limits.allowed_paths = caps_.allowed_paths;
     }
 
-    // === SECURITY FIX: REAL ISOLATION ===
+    // SECURITY FIX: REAL ISOLATION
     // BEFORE: Sandbox::execute_safe (thread - cannot kill, detach leak)
     // AFTER: Sandbox::execute_in_process (fork + RLIMIT_AS + SIGKILL / Job Object + TerminateJobObject)
     std::string result;
