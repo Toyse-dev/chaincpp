@@ -19,7 +19,7 @@ int main() {
         std::cout << "Test 1: Safe function execution... ";
         auto result = Sandbox::execute_safe([]() -> Result<void> {
             return Result<void>::ok();
-        });
+        }, SecurityLimits::safe_defaults());
         
         if (result.is_ok()) {
             std::cout << "PASSED\n";
@@ -35,7 +35,7 @@ int main() {
         std::cout << "Test 2: Error propagation... ";
         auto result = Sandbox::execute_safe([]() -> Result<void> {
             return Result<void>::err("Test error message");
-        });
+        }, SecurityLimits::safe_defaults());
         
         if (result.is_err() && result.error() == "Test error message") {
             std::cout << "✓ PASSED\n";
@@ -78,7 +78,7 @@ int main() {
                 sum += i;
             }
             return Result<void>::ok();
-        });
+        }, SecurityLimits::safe_defaults());
         
         if (result.is_ok()) {
             std::cout << "PASSED\n";
@@ -97,7 +97,7 @@ int main() {
         for (int i = 0; i < 10; i++) {
             auto result = Sandbox::execute_safe([]() -> Result<void> {
                 return Result<void>::ok();
-            });
+            }, SecurityLimits::safe_defaults());
             if (result.is_err()) {
                 all_ok = false;
                 break;
