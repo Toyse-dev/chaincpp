@@ -167,62 +167,37 @@ Result<void> Sandbox::execute_safe(
 // Better solution: Process-based sandboxing
 Result<void> Sandbox::execute_in_process(std::function<int()> func, const SecurityLimits& limits) {
 #ifdef _WIN32
-// The hardened windows OS process Isolation engine
+// v0.1: thread + timeout only. Do NOT assign current process to a Job with KILL_ON_JOB_CLOSE.
+// v0.2: spawn chaincpp_sandbox_worker.exe and use AssignProcessToJobObject(child)
 
-HANDLE job = CreateJobObjectW(nullptr, nullptr);
-if (!job) {
-    return Result<void>::err("CreateJobObjectW failed: " + std::to_string(GetLastError()));
-}
-
-// Set resource limits natively on the OS kernel level
-JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limits = {};
-job_limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_JOB_MEMORY | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-if (limits.max_memory_bytes > 0) {
-    job_limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
-    job_limits.JobMemoryLimit = limits.max_memory_bytes;
-}
-
-if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &job_limits, sizeof(job_limits))) {
-    CloseHandle(job);
-    return Result<void>::err("SetInformationJobObject failed");
-}
-
-// For v0.1: thread + job for memory enforcement
-// v0.2 TODO: spawn chaincpp_sandbox_worker.exe and AssignProcessToJobObject(child)
-std::atomic<int> exit_code{1};
+std::atomic<int> exit_code{0};
 std::atomic<bool> done{false};
-HANDLE worker_thread_handle = nullptr;
 
 std::thread worker([&]() {
-    // Don't assign GetCurrentProcess() to job if we're already in a job (nested jobs fail on Win7/8)
-    BOOL in_job = FALSE;
-    IsProcessInJob(GetCurrentProcess(), job, &in_job);
-    if (!in_job) {
-        AssignProcessToJobObject(job, GetCurrentProcess());  // best-effort memory limit
-    }
-    worker_thread_handle = GetCurrentThread(); // for TerminateThread on timeout
     exit_code = func();
     done = true;
 });
 
 auto start = std::chrono::steady_clock::now();
-while (!done.load()) {
-    if (std::chrono::steady_clock::now() - start > limits.timeout) {
-        if (worker.joinable()) {
-            TerminateThread((HANDLE)worker.native_handle(), 1);
-            worker.detach(); // process is being torn down
-        }
-        CloseHandle(job);
-        return Result<void>::err("Execution timeout: after " + std::to_string(limits.timeout.count()) + "ms");
+while (!done) {
+    auto elapsed = std::chrono::steady_clock::now() - start;
+    if (elapsed > limits.timeout) {
+        // Can't safely kill std::thread, but we can detach and report timeout
+        // For hard kill, need child process, not thread
+        worker.detach();
+        return Result<void>::err("Timeout after " + std::to_string(
+            std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + "ms");
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 
 if (worker.joinable()) worker.join();
-CloseHandle(job);
 
-return exit_code.load() == 0 ? Result<void>::ok() 
-                            : Result<void>::err("Sandboxed process failed with code " + std::to_string(exit_code.load()));
+if (exit_code != 0) {
+    return Result<void>::err("Tool execution failed with code " + std::to_string(exit_code));
+}
+return Result<void>::ok();
+
 #else
     // Linux / Unix true isolation
     pid_t pid = fork();
