@@ -139,34 +139,62 @@ security::Result<std::vector<std::vector<float>>> OpenAIEmbeddings::embed_batch(
     }
 }
 
-// LocalEmbeddings Implementation (stub for now)
+// LOCALEMBEDDINGS Implementation - determinsitic hash embedding (v0.1)
+// v0.2 TODO: ONNX Runtime with all-MiniLM-L6-v2
 class LocalEmbeddings::Impl {
 public:
     Impl(const Config& cfg) : config_(cfg) {
-        dimension_ = cfg.dimension;
+        dimension_ = cfg.dimension > 0 ? cfg.dimension : 384;
     }
     
     security::Result<std::vector<float>> embed(const std::string& text) {
-        // Stub - generate random embeddings for testing
-        std::vector<float> embedding(dimension_);
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::normal_distribution<float> dist(0.0f, 1.0f);
-        
-        // Make deterministic-ish for same text
+        if (text.empty()) {
+            return security::Result<std::vector<float>>::ok(std::vector<float>(dimension_, 0.0f));
+        }
+
+        std::vector<float> embedding(dimension_, 0.0f);
+
+        // Lowercase + tokenize by whitespace/punct
+        std::string lower = text;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+        std::vector<std::string> words;
+        std::string cur;
+        for (char c : lower) {
+            if (std::isalnum((unsigned char)c)) {
+                cur += c;
+            } else {
+                if (!cur.empty()) { words.push_back(cur); cur.clear(); }
+            }
+        }
+        if (!cur.empty()) words.push_back(cur);
+
+        if (words.empty()) {
+            words.push_back(lower);
+        }
+        // Hash-trick: each word contributes to 2 positions + bigram
         std::hash<std::string> hasher;
-        size_t seed = hasher(text);
-        gen.seed(seed);
-        
-        for (size_t i = 0; i < dimension_; ++i) {
-            embedding[i] = dist(gen);
+        for (size_t wi = 0; wi < words.size(); ++wi) {
+            const auto& w = words[wi];
+            size_t h1 = hasher(w);
+            size_t h2 = hasher(w + "_salt");
+
+            embedding[h1 % dimension_] += 1.0f;
+            embedding[h2 % dimension_] += 0.5f;
+
+            // bigrams for better similarity
+            if (wi + 1 < words.size()) {
+                std::string bigram = w + "_" + words[wi+1];
+                size_t hb = hasher(bigram);
+                embedding[hb % dimension_] += 0.8f;
+            }
         }
         
-        // Normalize
+        // Normalize to unit length fo cosine similarity
         float norm = 0.0f;
         for (float v : embedding) norm += v * v;
         norm = std::sqrt(norm);
-        if (norm > 0.0f) {
+        if (norm > 1e-6f) {
             for (float& v : embedding) v /= norm;
         }
         
