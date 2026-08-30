@@ -21,13 +21,6 @@ using json = nlohmann::json;
 
 namespace chaincpp::models {
 
-// Heuristic fallback only for OpenAI/Anthropic. LocalLLM uses real tokenizer
-size_t count_tokens(const std::string& text) {
-    if (text.empty()) return 0;
-    // v0.1 heuristic fallback: prevent truncation to 0 for single characters
-    return std::max(size_t(1), text.length() / 4);  // Rough heuristic: 1 token ~ 4 characters
-}
-
 // Message RAII Installation Blocks
 Message Message::system(std::string content) { return {Role::SYSTEM, std::move(content), {}}; }
 Message Message::user(std::string content) { return {Role::USER, std::move(content), {}}; }
@@ -342,7 +335,7 @@ static void ensure_llama_backend_init() {
 
 class LocalLLM::Impl {
 public:
-    Impl(const LocalLLM::Config& cfg) : config_(cfg) {
+    Impl(const Config& cfg) : config_(cfg) {
         // Initialize llama.cpp backend blobal resources exactly once
         ensure_llama_backend_init();
 
@@ -365,19 +358,24 @@ public:
     ~Impl() {
         if (ctx_) llama_free(ctx_);
         if (model_) llama_model_free(model_);
-        // no llama_backend_free here - handled by atexit
         // Global llama_backend_free completely removed from instance destructor to fix memory corruption crashes;
     }
 
     bool is_ready() const { return model_ != nullptr && ctx_ != nullptr; }
 
     size_t count_tokens_real(const std::string& text) const {
-        if (!model_) return std::max(size_t(1), text.length() / 4);
-        const struct llama_vocab* vocab = llama_model_get_vocab(model_);
+        if (!model_ || text.empty()) return 0;
+        const llama_vocab* vocab = llama_model_get_vocab(model_);
         if (!vocab) return std::max(size_t(1), text.length() / 4);
+
         int n = llama_tokenize(vocab, text.c_str(), text.size(), nullptr, 0, true, true);
-        if (n < 0) n = n;
-        return n > 0 ? (size_t)n : std::max(size_t(1), text.length() / 4);
+        if (n < 0) n = -n;
+        if (n <= 0) return std::max(size_t(1), text.length() / 4);
+
+        std::vector<llama_token> tmp(n);
+        int n2 = llama_tokenize(vocab, text.c_str(), text.size(), tmp.data(), tmp.size(), true, true);
+        if (n2 < 0) return std::max(size_t(1), text.length() / 4);
+        return static_cast<size_t>(n2);
     }
     
     security::Result<std::string> generate([[maybe_unused]] const std::vector<Message>& messages, const ModelConfig& config) {
@@ -409,95 +407,41 @@ public:
         }
 
         // Native autoregressive llama_decode evaluation token stream sampler loop
-        std::string output_response;
         struct llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
         
         if (llama_decode(ctx_, batch) != 0) {
             return security::Result<std::string>::err("Local inference failure: Initial batch evaluation matrix sequence failed.");
         }
 
-        // Initialize random engine natively using our thread-safe random configurations
-        std::random_device rd;
-        std::mt19937 gen(rd());
-        std::uniform_real_distribution<float> uniform_dist(0.0f, 1.0f);
+        // llama-sampler - 0 allocs in loop
+        llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(config.temperature > 0? config.temperature : 0.7f));
+        llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_dist(0));
 
-        llama_token curr_token = 0;
-        int max_generation_tokens = std::min(static_cast<int>(config.max_tokens>0? config.max_tokens : 512), 4096);
-        int vocab_size = llama_vocab_n_tokens(vocab);
-
-        // Reuse buffer, don't reallocate each iteration, for performance
-        if ((int)tmp_probs_.size() != vocab_size) tmp_probs_.resize(vocab_size);
-
-        for (int i = 0; i < max_generation_tokens; ++i) {
-            auto logits = llama_get_logits_ith(ctx_, batch.n_tokens - 1);
-
-            // Temparature sampling
-            if (config.temperature > 0.001f) {
-                // Scale logits by temparature and find maximum logit for numerical stability
-                std::vector<float> scaled_probs(vocab_size);
-                float max_logit = -std::numeric_limits<float>::infinity();
-                for (int v = 0; v < vocab_size; ++v) {
-                    scaled_probs[v] = logits[v] / config.temperature;
-                    if (scaled_probs[v] > max_logit) max_logit = scaled_probs[v];
-                }
-
-                // Compute softmax probabilities with exponential stability protections
-                float sum = 0.0f;
-                for (int v = 0; v < vocab_size; ++v) {
-                    scaled_probs[v] = std::exp(scaled_probs[v] - max_logit);
-                    sum += scaled_probs[v];
-                }
-                for (int v = 0; v < vocab_size; ++v) {
-                    scaled_probs[v] /= sum;
-                }
-
-                // Randomly sample token based on computed Softmax probability weights
-                 float r = std::uniform_real_distribution<float>(0.0f, 1.0f)(gen);
-                 float cumsum = 0.0f;
-                 curr_token = vocab_size - 1; // Default to last token if sampling fails
-                 for (int v = 0; v < vocab_size; ++v) {
-                     cumsum += scaled_probs[v];
-                     if (r < cumsum) {
-                         curr_token = v;
-                         break;
-                     }
-                 }
-            } else {
-                // Fallback to greedy deterministic search when temperature is 0
-                curr_token = std::distance(logits, std::max_element(logits, logits + vocab_size));
+        std::string out;
+        int max_tokens = std::min<int>(config.max_tokens > 0 ? config.max_tokens : 512, 4096);
+        for (int i = 0; i < max_tokens; ++i) {
+            llama_token tok = llama_sampler_sample(smpl, ctx_, -1);
+            if (tok == llama_vocab_eos(vocab)) break;
+            char buf[256];
+            int len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, true);
+            if (len < 0) { 
+                std::vector<char> b(-len); 
+                len = llama_token_to_piece(vocab, tok, b.data(), b.size(), 0, true); 
+                if (len > 0) out.append(b.data(), len); 
+            } else if (len > 0) out.append(buf, len);
+            batch = llama_batch_get_one(&tok, 1);
+            if (llama_decode(ctx_, batch) != 0) break;
         }
-
-        if (curr_token == llama_vocab_eos(vocab)) break; // End of sequence encountered cleanly
-        
-        // Dynamic sizing pass to prevent silent truncation on large/multi-byte token
-        char static_buf[128]; // 128 bytes static stack buffer for token piece conversion
-        int n_chars = llama_token_to_piece(vocab, curr_token, static_buf, sizeof(static_buf), 0, true);
-        if (n_chars < 0) {
-            // Allocate a dynamic temporary vector array container to catch multi-byte characters safely
-            std::vector<char> piece_buf(-n_chars);
-            n_chars = llama_token_to_piece(vocab, curr_token, piece_buf.data(), piece_buf.size(), 0, true);
-
-            if (n_chars > 0) {
-                output_response.append(piece_buf.data(), n_chars);
-            }
-        } else if (n_chars > 0) {
-            // Text fits into the static 128-bytes stack cache safely
-            output_response.append(static_buf, n_chars);
-        }
-
-        // Feed current token back to context loop for next iteration phase tracking
-        batch = llama_batch_get_one(&curr_token, 1);
-        if (llama_decode(ctx_, batch) != 0) break;
-    }
-
-        return security::Result<std::string>::ok(std::move(output_response));
+        llama_sampler_free(smpl);
+        return security::Result<std::string>::ok(std::move(out));
     }
     
 private:
-    LocalLLM::Config config_;
+    Config config_;
     llama_model* model_ = nullptr;
     llama_context* ctx_ = nullptr;
-    std::vector<float> tmp_probs_; // Temporary buffer for probability calculations
 };
 
 security::Result<std::unique_ptr<LocalLLM>> LocalLLM::create(Config cfg) {
@@ -511,13 +455,13 @@ security::Result<std::unique_ptr<LocalLLM>> LocalLLM::create(Config cfg) {
 
 LocalLLM::~LocalLLM() = default;
 
-// Overload 1: Satisfies the pure virtual interface contract for BaseLLM
+// Satisfies the pure virtual interface contract for BaseLLM
 security::Result<std::string> LocalLLM::generate(const std::vector<Message>& messages, const ModelConfig& config) {
     // Forward variables directly to the implementation unit execution chain
     return impl_->generate(messages, config);
 }
 
-// Overload 2: Satisfies the specialized signature pattern (Line 186 in llm.hpp)
+// Satisfies the specialized signature pattern (Line 186 in llm.hpp)
 security::Result<std::string> LocalLLM::generate(const std::vector<Message>& messages, StreamCallback stream_cb) {
     ModelConfig default_config;
     default_config.max_tokens = 512;
@@ -570,8 +514,8 @@ size_t AnthropicChat::count_tokens(const std::string& text) const {
 }
 
 size_t LocalLLM::count_tokens(const std::string& text) const {
-    if (text.empty()) return 0;
-    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token 4 characters
+    if (!impl_) return std::max(size_t(1), text.length() / 4);
+    return impl_->count_tokens_real(text);
 }
 
 }
