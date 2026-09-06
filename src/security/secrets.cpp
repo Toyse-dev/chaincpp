@@ -131,13 +131,12 @@ SecretsManager& SecretsManager::instance() {
 
 Result<void> SecretsManager::store_key(const std::string& service, const secure_string& key) {
     // Thread-safe, single-pass lambda initialization gate for Libsodium framework targets
-    static bool sodium_ready = []() {
-        return sodium_init() >= 0;
-    }();
+    static std::once_flag flag;
+    static bool sodium_ok = false;
+    std::call_once(flag, [](){ sodium_ok = sodium_init() >= 0; });
 
-    if (!sodium_ready) {
-        return Result<void>::err("Cryptographic Initialization Failure: libsodium startup sequence failed.");
-    }
+    if (!sodium_ok) return Result<void>::err("Cryptographic Initialization Failure: libsodium startup sequence failed.");
+
     cleanup_cache();
 
     if (service.empty() || key.empty()) {
@@ -164,12 +163,7 @@ Result<secure_string> SecretsManager::get_key(const std::string& service) {
             return Result<secure_string>::ok(secure_string(it->second.key.to_string()));
         }
     }
-
-    auto encrypted = retrieve_secure(service);
-    if (!encrypted.has_value()) {
-        return Result<secure_string>::err("Key not found for service: " + service);
-    }
-    return Result<secure_string>::err("Persistent storage not implemented in v0.1");
+    return Result<secure_string>::err("Persistent storage not implemented in v0.1" + service);
 }
 
 bool SecretsManager::has_key(const std::string& service) const {
@@ -199,14 +193,6 @@ Result<secure_string> SecretsManager::load_from_env(const std::string& env_var) 
     auto store_res = store_key(env_var, secret);
     if (store_res.is_err()) return Result<secure_string>::err(store_res.error());
     return Result<secure_string>::ok(std::move(secret));
-}
-
-bool SecretsManager::store_secure([[maybe_unused]] const std::string&, [[maybe_unused]] const std::vector<uint8_t>&) {
-    return false; // v0.1: no persistent storage - in-memory cache only
-}
-
-std::optional<std::vector<uint8_t>> SecretsManager::retrieve_secure([[maybe_unused]] const std::string&) const {
-    return std::nullopt; // Deprecated file backup operations safely blocked for v0.1 security parameters
 }
 
 // Dead, insecure XOR obfuscation methods completely purged to pass core audit checks
