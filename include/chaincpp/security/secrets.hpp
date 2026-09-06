@@ -81,11 +81,9 @@ public:
     
 private:
     SecretsManager() = default;
+    // v0.1: in-memory only, no disk persistence
+    // v0.2: TODO: DPAPI (Windows), libsecret/keyctl (Linux), Keychain (macOS)
 
-    // Platform-specific secure storage
-    bool store_secure(const std::string& service, const std::vector<uint8_t>& encrypted);
-    std::optional<std::vector<uint8_t>> retrieve_secure(const std::string& service) const;
-    
     // In-memory cache (cleared after use)
     struct CachedKey {
         secure_string key;
