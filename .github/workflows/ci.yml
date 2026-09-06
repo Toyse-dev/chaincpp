@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: macos-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: windows-latest
+            compiler: msvc
+            cc: cl
+            cxx: cl
+          - os: windows-latest
+            compiler: mingw
+            cc: gcc
+            cxx: g++
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+        
+      - name: Install deps (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libsodium-dev libcurl4-openssl-dev libsecret-1-dev libkeyutils-dev
+          # llama.cpp deps
+          sudo apt-get install -y libopenblas-dev
+      
+      - name: Install deps (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          brew install cmake ninja libsodium curl
+      
+      - name: Install deps (Windows MSVC)
+        if: matrix.compiler == 'msvc'
+        run: |
+          vcpkg install libsodium:x64-windows curl:x64-windows
+      
+      - name: Setup MinGW (Windows)
+        if: matrix.compiler == 'mingw'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-libsodium
+            mingw-w64-ucrt-x86_64-curl
+      
+      - name: Configure (Unix)
+        if: matrix.compiler != 'mingw' && matrix.compiler != 'msvc'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-Werror -Wall -Wextra -Wpedantic" \
+            -DBUILD_TESTING=ON
+      
+      - name: Configure (MSVC)
+        if: matrix.compiler == 'msvc'
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_CXX_FLAGS="/WX ?W4" `
+            -DBUILD_TESTING=ON
+      
+      - name: Configure (MinGW)
+        if: matrix.compiler == 'mingw'
+        shell: msys2 {0}
+        run: |
+          cmake -B build -G "MinGW Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="-Werror -Wall -Wextra -Wpedantic" \
+            -DBUILD_TESTING=ON
+          
+      - name: Build
+        run: cmake --build build --config Release -j2
+
+      - name: Test
+        working-directory: build
+        run: ctest --output-on-failure -C Release -j2
