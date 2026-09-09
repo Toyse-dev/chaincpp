@@ -16,7 +16,16 @@ endif()
 # Find Dependencies
 find_package(Zstd QUIET)
 find_package(CURL REQUIRED)
-find_package(nlohmann_json REQUIRED)
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found, fetching with FetchContent")
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohman_json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
 find_package(llama REQUIRED)
 find_package(PkgConfig REQUIRED)
 

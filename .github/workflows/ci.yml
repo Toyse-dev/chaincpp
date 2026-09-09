@@ -50,7 +50,7 @@ jobs:
       - name: Install deps (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
-          brew install cmake ninja libsodium curl zstd
+          brew install cmake ninja libsodium curl zstd nlohmann-json openblas
       
       - name: Install deps (Windows MSVC)
         if: matrix.compiler == 'msvc'
