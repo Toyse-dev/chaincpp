@@ -14,10 +14,11 @@ if (CHAINCPP_STATIC_EXE AND WIN32)
 endif()
 
 # Find Dependencies
-find_package(Zstd REQUIRED)
+find_package(Zstd QUIET)
 find_package(CURL REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(llama REQUIRED)
+find_package(PkgConfig REQUIRED)
 
 # Try native config discovery first, fallback safely to PkgConfig for MSYS2 UCRT64 compatibility
 find_package(unofficial-sodium CONFIG QUIET)
@@ -67,8 +68,16 @@ target_link_libraries(chaincpp
     CURL::libcurl
     nlohmann_json::nlohmann_json
     PkgConfig::LIBSODIUM
-    zstd::libzstd_static
 )
+
+# zstd - only link if system package found, otherwise llama.cpp vendors
+if(Zstd_FOUND)
+    target_link_libraries(chaincpp PUBLIC zstd::libzstd_static)
+endif()
+
+if(WIN32)
+    target_link_libraries(chaincpp PRIVATE crypt32)
+endif()
 
 # Bind libsodium accurately based on discovery paths
 if(unofficial-sodium_FOUND)
