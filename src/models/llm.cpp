@@ -346,18 +346,19 @@ public:
         model_params.use_mlock = config_.use_mlock;
 
         // Load GGUF weights from local path safely
-        model_ = llama_model_load_from_file(config_.model_path.c_str(), model_params);
+        model_ = llama_load_model_from_file(config_.model_path.c_str(), model_params);
         if (model_) {
             llama_context_params ctx_params = llama_context_default_params();
             ctx_params.n_ctx = config_.context_size;
             ctx_params.n_batch = 512;
-            ctx_ = llama_init_from_model(model_, ctx_params);
+            ctx_params.n_threads = 4;
+            ctx_ = llama_new_context_with_model(model_, ctx_params);
         }
     }
 
     ~Impl() {
         if (ctx_) llama_free(ctx_);
-        if (model_) llama_model_free(model_);
+        if (model_) llama_free_model(model_);
         // Global llama_backend_free completely removed from instance destructor to fix memory corruption crashes;
     }
 
@@ -365,15 +366,11 @@ public:
 
     size_t count_tokens_real(const std::string& text) const {
         if (!model_ || text.empty()) return 0;
-        const llama_vocab* vocab = llama_model_get_vocab(model_);
-        if (!vocab) return std::max(size_t(1), text.length() / 4);
-
-        int n = llama_tokenize(vocab, text.c_str(), text.size(), nullptr, 0, true, true);
+        int n = llama_tokenize(model_, text.c_str(), text.size(), nullptr, 0, true, true);
         if (n < 0) n = -n;
         if (n <= 0) return std::max(size_t(1), text.length() / 4);
-
         std::vector<llama_token> tmp(n);
-        int n2 = llama_tokenize(vocab, text.c_str(), text.size(), tmp.data(), tmp.size(), true, true);
+        int n2 = llama_tokenize(model_, text.c_str(), text.size(), tmp.data(), tmp.size(), true, true);
         if (n2 < 0) return std::max(size_t(1), text.length() / 4);
         return static_cast<size_t>(n2);
     }
@@ -387,18 +384,12 @@ public:
         std::string raw_prompt;
         for (const auto& msg : messages) raw_prompt += msg.content + "\n";
 
-        // Fetch the distinct vocabulary instance from the modern engine layout
-        const struct llama_vocab* vocab = llama_model_get_vocab(model_);
-        if (!vocab) {
-            return security::Result<std::string>::err("Local engine failure: Failed to extract model vocabulary map.");
-        }
-
         // Exponential allocation expansion loop to prevent token array boundaries truncation
         std::vector<llama_token> tokens(1024);
-        int n_tokens = llama_tokenize(vocab, raw_prompt.c_str(), raw_prompt.size(), tokens.data(), tokens.size(), true, true);
+        int n_tokens = llama_tokenize(model_, raw_prompt.c_str(), raw_prompt.size(), tokens.data(), tokens.size(), true, true);
         if (n_tokens < 0) {
             tokens.resize(-n_tokens);
-            n_tokens = llama_tokenize(vocab, raw_prompt.c_str(), raw_prompt.size(), tokens.data(), tokens.size(), true, true);
+            n_tokens = llama_tokenize(model_, raw_prompt.c_str(), raw_prompt.size(), tokens.data(), tokens.size(), true, true);
         }
         tokens.resize(std::max(0, n_tokens));
 
@@ -423,12 +414,12 @@ public:
         int max_tokens = std::min<int>(config.max_tokens > 0 ? config.max_tokens : 512, 4096);
         for (int i = 0; i < max_tokens; ++i) {
             llama_token tok = llama_sampler_sample(smpl, ctx_, -1);
-            if (tok == llama_vocab_eos(vocab)) break;
+            if (tok == llama_token_eos(model_)) break;
             char buf[256];
-            int len = llama_token_to_piece(vocab, tok, buf, sizeof(buf), 0, true);
+            int len = llama_token_to_piece(model_, tok, buf, sizeof(buf), 0, true);
             if (len < 0) { 
                 std::vector<char> b(-len); 
-                len = llama_token_to_piece(vocab, tok, b.data(), b.size(), 0, true); 
+                len = llama_token_to_piece(model_, tok, b.data(), b.size(), 0, true); 
                 if (len > 0) out.append(b.data(), len); 
             } else if (len > 0) out.append(buf, len);
             batch = llama_batch_get_one(&tok, 1);

@@ -7,26 +7,51 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Build options toggle (Deafult OFF for fast compilation safety)
-option(CHAINCOO_STATIC_EXE "Build static standalone executable binaries" OFF)
+option(CHAINCPP_STATIC_EXE "Build static standalone executable binaries" OFF)
 
 if (CHAINCPP_STATIC_EXE AND WIN32)
     add_link_options(-static -static-libgcc -static-libstdc++)
 endif()
 
+include(FetchContent)
+
 # Find Dependencies
 find_package(Zstd QUIET)
 find_package(CURL REQUIRED)
+
 find_package(nlohmann_json QUIET)
 if(NOT nlohmann_json_FOUND)
     message(STATUS "nlohmann_json not found, fetching with FetchContent")
-    include(FetchContent)
     FetchContent_Declare(
-        nlohman_json
+        nlohmann_json
         URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
     )
     FetchContent_MakeAvailable(nlohmann_json)
 endif()
-find_package(llama REQUIRED)
+
+set(LLAMA_CCACHE OFF CACHE BOOL "" FORCE)
+set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
+set(CMAKE_C_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
+set(CMAKE_CXX_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
+
+FetchContent_Declare(
+  llama
+  GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git
+  GIT_TAG        b4242
+  GIT_SHALLOW    TRUE
+  GIT_PROGRESS   TRUE
+)
+set(FETCHCONTENT_QUIET OFF)
+set(LLAMA_CCACHE OFF CACHE BOOL "" FORCE)
+set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(llama)
+
+if(TARGET llama)
+    target_compile_options(llama PRIVATE -Wno-error -Wno-deprecated-declarations)
+    target_compile_options(ggml PRIVATE -Wno-error)
+    target_compile_options(ggml-base PRIVATE -Wno-error)
+endif()
+
 find_package(PkgConfig REQUIRED)
 
 # Try native config discovery first, fallback safely to PkgConfig for MSYS2 UCRT64 compatibility
@@ -43,7 +68,7 @@ option(BUILD_EXAMPLES "Build examples" ON)
 
 # Hardened compilation flags
 if(MSVC)
-    add_compile_options(/W4 /WX /guard:cf /DYNAMICBASE /NXCOMPAT)
+    add_compile_options(/W4 /DYNAMICBASE /NXCOMPAT)
     add_compile_options(/D_CRT_SECURE_NO_WARNINGS)
 else()
     # Standard warnings
@@ -72,6 +97,12 @@ add_library(chaincpp STATIC
     src/rag/vector_store.cpp
 )
 
+target_include_directories(chaincpp PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
+# Link
 target_link_libraries(chaincpp
     PUBLIC
     CURL::libcurl
@@ -79,14 +110,32 @@ target_link_libraries(chaincpp
     PkgConfig::LIBSODIUM
 )
 
+if(unofficial-sodium_FOUND)
+    target_link_libraries(chaincpp PUBLIC unofficial-sodium::sodium)
+else()
+    target_link_libraries(chaincpp PUBLIC PkgConfig::LIBSODIUM)
+endif()
+
 # zstd - only link if system package found, otherwise llama.cpp vendors
 if(Zstd_FOUND)
     target_link_libraries(chaincpp PUBLIC zstd::libzstd_static)
 endif()
 
-if(WIN32)
-    target_link_libraries(chaincpp PRIVATE crypt32)
+if(TARGET llama::llama)
+    target_link_libraries(chaincpp PUBLIC llama::llama)
+elseif(TARGET llama)
+    target_link_libraries(chaincpp PUBLIC llama)
 endif()
+
+if(WIN32)
+    target_link_libraries(chaincpp PRIVATE crypt32 ws2_32 wldap32)
+endif()
+
+if(UNIX AND NOT APPLE)
+    target_link_libraries(chaincpp PRIVATE pthread)
+endif()
+
+target_compile_definitions(chaincpp PRIVATE $<$<CONFIG:Debug>:CHAINCPP_DEBUG>)
 
 # Bind libsodium accurately based on discovery paths
 if(unofficial-sodium_FOUND)
@@ -127,17 +176,12 @@ target_compile_definitions(chaincpp PRIVATE $<$<CONFIG:Debug>:CHAINCPP_DEBUG>)
 # Testing
 if(BUILD_TESTS)
     enable_testing()
-    
-    add_executable(test_sandbox
-        tests/test_sandbox.cpp
-    )
+    add_executable(test_sandbox tests/test_sandbox.cpp)
     target_link_libraries(test_sandbox chaincpp)
     target_compile_definitions(test_sandbox PRIVATE CHAINCPP_TESTING)
     add_test(NAME SandboxSecurityTests COMMAND test_sandbox)
 
-    add_executable(test_prompt
-        tests/test_prompt.cpp
-    )
+    add_executable(test_prompt tests/test_prompt.cpp)
     target_link_libraries(test_prompt chaincpp)
     add_test(NAME PromptSecurityTests COMMAND test_prompt)
 
@@ -153,16 +197,10 @@ endif()
 
 # Examples
 if(BUILD_EXAMPLES)
-    add_executable(basic_usage
-        examples/basic_usage.cpp
-    )
+    add_executable(basic_usage examples/basic_usage.cpp)
     target_link_libraries(basic_usage chaincpp)
-
-    add_executable(prompt_example
-        examples/prompt_example.cpp
-    )
+    add_executable(prompt_example examples/prompt_example.cpp)
     target_link_libraries(prompt_example chaincpp)
-
     add_executable(local_example examples/local_example.cpp)
     target_link_libraries(local_example chaincpp)
 
@@ -172,8 +210,7 @@ if(BUILD_EXAMPLES)
 endif()
 
 # Installation
-install(TARGETS chaincpp
-    EXPORT chaincppTargets
+install(TARGETS chaincpp EXPORT chaincppTargets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin

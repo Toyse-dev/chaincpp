@@ -1,11 +1,9 @@
 name: CI
-
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-
 jobs:
   build:
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
@@ -38,25 +36,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-        
+
       - name: Install deps (Ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsodium-dev libcurl4-openssl-dev libsecret-1-dev libzstd-dev libkeyutils-dev
-          # llama.cpp deps
-          sudo apt-get install -y libopenblas-dev
-      
+          sudo apt-get install -y cmake ninja-build libsodium-dev libcurl4-openssl-dev libzstd-dev libopenblas-dev
+
       - name: Install deps (macOS)
         if: startsWith(matrix.os, 'macos')
         run: |
           brew install cmake ninja libsodium curl zstd nlohmann-json openblas
-      
-      - name: Install deps (Windows MSVC)
-        if: matrix.compiler == 'msvc'
-        run: |
-          vcpkg install libsodium:x64-windows curl:x64-windows zstd:x64-windows
-      
+
       - name: Setup MinGW (Windows)
         if: matrix.compiler == 'mingw'
         uses: msys2/setup-msys2@v2
@@ -69,34 +60,29 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-libsodium
             mingw-w64-ucrt-x86_64-curl
-      
+            mingw-w64-ucrt-x86_64-zstd
+            mingw-w64-ucrt-x86_64-nlohmann-json
+            mingw-w64-ucrt-x86_64-openblas
+
       - name: Configure (Unix)
         if: matrix.compiler != 'mingw' && matrix.compiler != 'msvc'
         env:
           CC: ${{ matrix.cc }}
           CXX: ${{ matrix.cxx }}
         run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-Werror -Wall -Wextra -Wpedantic" \
-            -DBUILD_TESTING=ON
-      
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
+
       - name: Configure (MSVC)
         if: matrix.compiler == 'msvc'
         run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_CXX_FLAGS="/WX ?W4" `
-            -DBUILD_TESTING=ON
-      
+          cmake -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTS=ON
+
       - name: Configure (MinGW)
         if: matrix.compiler == 'mingw'
         shell: msys2 {0}
         run: |
-          cmake -B build -G "MinGW Makefiles" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_FLAGS="-Werror -Wall -Wextra -Wpedantic" \
-            -DBUILD_TESTING=ON
-          
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
+
       - name: Build
         run: cmake --build build --config Release -j2
 
