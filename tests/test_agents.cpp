@@ -11,31 +11,47 @@ using namespace chaincpp::security;
 void test_tool_creation() {
     std::cout << "Testing Tool creation...\n";
     
-    // Test valid tool
-    Tool time_tool = builtin_tools::create_time_tool();
-    std::cout << " Time tool created\n";
+    try {
+        // Test valid tool
+        Tool time_tool = builtin_tools::create_time_tool();
+        std::cout << " Time tool created\n";
+
+         // Test tool execution
+        auto result = time_tool.execute("{}");
+        if (!result.is_ok()) {
+            std::cerr << "  Time tool execution failed: " << result.error() << "\n";
+            throw std::runtime_error(result.error());
+        }
+        std::cout << "  Time tool executed: " << result.value() << "...\n";
+
+        // Test calculator tool
+        auto calc_tool = builtin_tools::create_calculator_tool();
+        auto calc_result = calc_tool.execute(R"({"expression": "2 + 3 * 4"})");
+        if (!calc_result.is_ok()) {
+            std::cout << "Calculator tool execution failed: " << calc_result.error() << "\n";
+            throw std::runtime_error(calc_result.error());
+        }
+        std::cout << "  Calculator: " << calc_result.value() << "\n";
+    } catch (const std::exception& e) {
+        std::cout << "  Tool creation test failed: " << e.what() << "\n";
+        throw;
+    }
+
+    std::cout << "Tool test passed\n\n";
     
-    // Test tool execution
-    auto result = time_tool.execute("{}");
-    assert(result.is_ok());
-    std::cout << "  Time tool executed: " << result.value().substr(0, 20) << "...\n";
-    
-    // Test calculator tool
-    auto calc_tool = builtin_tools::create_calculator_tool();
-    auto calc_result = calc_tool.execute(R"({"expression": "2 + 3 * 4"})");
-    assert(calc_result.is_ok());
-    std::cout << "  Calculator: " << calc_result.value() << "\n";
-    
-    std::cout << "Tool tests passed\n\n";
 }
 
 void test_tool_registry() {
     std::cout << "Testing ToolRegistry...\n";
-    
     auto& registry = ToolRegistry::instance();
     
     auto tool = builtin_tools::create_system_info_tool();
     auto register_result = registry.register_tool(tool);
+    if (!register_result.is_ok()) {
+        std::cout << "Register failed (already exists?): " << register_result.error() << "\n";
+        registry.clear(); // Clear registry for test isolation
+        register_result = registry.register_tool(tool);
+    }
     assert(register_result.is_ok());
     std::cout << "  Tool registered\n";
     

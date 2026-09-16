@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
+#include <mutex>
 #include <functional>
 #include <map>
 #include <chrono>
@@ -128,9 +129,15 @@ public:
     
     // Unregister tool
     security::Result<void> unregister_tool(const std::string& name);
+
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        tools_.clear();
+    }
     
 private:
     ToolRegistry() = default;
+    mutable std::mutex mutex_;
     std::map<std::string, Tool> tools_;
 };
 
