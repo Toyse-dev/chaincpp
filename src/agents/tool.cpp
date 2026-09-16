@@ -83,10 +83,6 @@ security::Result<std::string> Tool::execute(const std::string& input) {
     if (caps_.needs_filesystem &&!caps_.allowed_paths.empty()) {
         limits.allowed_paths = caps_.allowed_paths;
     }
-
-    // SECURITY FIX: REAL ISOLATION
-    // BEFORE: Sandbox::execute_safe (thread - cannot kill, detach leak)
-    // AFTER: Sandbox::execute_in_process (fork + RLIMIT_AS + SIGKILL / Job Object + TerminateJobObject)
     std::string result;
     std::string error_msg;
     bool success = false;
@@ -210,8 +206,14 @@ security::Result<void> ToolRegistry::unregister_tool(const std::string& name) {
 namespace builtin_tools {
 
 Tool create_time_tool() {
-    auto caps = ToolCapabilities::safe_web_tool();
+    ToolCapabilities caps;
+    caps.needs_network = false;
+    caps.needs_filesystem = false;
+    caps.can_execute_commands = false;
     caps.requires_approval = false;
+    caps.timeout = std::chrono::seconds(2);
+    caps.max_input_bytes = 1024;
+
     auto func = [](const std::string&) -> security::Result<std::string> {
         auto now = std::chrono::system_clock::now();
         auto time_t_val = std::chrono::system_clock::to_time_t(now);
@@ -237,8 +239,10 @@ Tool create_time_tool() {
 }
 
 Tool create_calculator_tool() {
-    auto caps = ToolCapabilities::safe_web_tool();
+    ToolCapabilities caps;
+    caps.needs_network = false;
     caps.requires_approval = false;
+    caps.timeout = std::chrono::seconds(1);
 
     auto func = [](const std::string& input) -> security::Result<std::string> {
         try {
@@ -315,8 +319,11 @@ Tool create_file_reader_tool(const std::vector<std::string>& allowed_paths) {
 }
 
 Tool create_system_info_tool() {
-    auto caps = ToolCapabilities::safe_web_tool();
+    ToolCapabilities caps;
+    caps.needs_network = false;
     caps.requires_approval = false;
+    caps.timeout = std::chrono::seconds(1);
+    
     auto func = [](const std::string&) -> security::Result<std::string> {
         std::stringstream info;
         #ifdef _WIN32
