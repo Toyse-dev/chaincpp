@@ -1,11 +1,11 @@
 #include "chaincpp/security/sandbox.hpp"
-
 #include <iostream>
 #include <thread>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <future>
+#include <cstring>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -13,11 +13,13 @@
     #include <processthreadsapi.h>
     #include <memoryapi.h>
 #else
+    // POSIX - Linux and macOS
+    #include <sys/types.h>
+    #include <sys/wait.h>
     #include <sys/resource.h>
     #include <sys/time.h>
     #include <unistd.h>
     #include <signal.h>
-    #include <cstring>
 #endif
 
 namespace chaincpp::security {
