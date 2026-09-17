@@ -71,7 +71,7 @@ security::Result<std::string> Tool::execute(const std::string& input) {
         return security::Result<std::string>::err(validation.error());
     }
 
-    bool is_pure = !caps_.needs_network && !caps_.needs_filesystem && ! !caps_.can_execute_commands;
+    bool is_pure = !caps_.needs_network && !caps_.needs_filesystem;
     if (is_pure) {
         try {
             auto run_res = func_(input);
@@ -230,25 +230,17 @@ Tool create_time_tool() {
     caps.max_input_bytes = 1024;
 
     auto func = [](const std::string&) -> security::Result<std::string> {
-        auto now = std::chrono::system_clock::now();
-        auto time_t_val = std::chrono::system_clock::to_time_t(now);
-        std::tm tm_buf{};
-    #ifdef _WIN32
-        if (localtime_s(&tm_buf, &time_t_val) != 0) {
-            return security::Result<std::string>::err("localtime_s failed");
+        try {
+            auto now = std::chrono::system_clock::now();
+            auto secs = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+            std::stringstream ss;
+            ss << "Current time: " << secs << " seconds since epoch (UTC: "
+                << std::chrono::system_clock::to_time_t(now) << ")";
+            
+            return security::Result<std::string>::ok(ss.str());
+        } catch (const std::exception& e) {
+            return security::Result<std::string>::err(std::string("time error: ") + e.what());
         }
-    #else
-        if (localtime_r(&time_t_val, &tm_buf) == nullptr) {
-            return security::Result<std::string>::err("localtime_r failed");
-        }
-    #endif
-        char buf[64];
-        if (std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_buf) == 0) {
-            return security::Result<std::string>::err("strftime failed");
-        }
-        std::stringstream ss;
-        ss<< "Current time: " << buf;
-        return security::Result<std::string>::ok(ss.str());
     };
     return Tool::create("get_current_time","Get the current system date and time",func,caps,R"({"type": "object", "properties": {}})").value();
 }
