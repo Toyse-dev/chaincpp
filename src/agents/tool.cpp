@@ -71,13 +71,28 @@ security::Result<std::string> Tool::execute(const std::string& input) {
         return security::Result<std::string>::err(validation.error());
     }
 
+    bool is_pure = !caps_.needs_network && !caps_.needs_filesystem && ! !caps_.can_execute_commands;
+    if (is_pure) {
+        try {
+            auto run_res = func_(input);
+            if (!run_res.is_ok()) return run_res;
+            if (run_res.value().size() > caps_.max_output_bytes) {
+                return security::Result<std::string>::err("Output too large");
+            }
+            return run_res;
+        } catch (const std::exception& e) {
+            return security::Result<std::string>::err(std::string("Exception in tool: ") + e.what());
+        }
+    }
+
+    // Sandbox Tools: file_reader, web_search
     auto limits = security::SecurityLimits::safe_defaults();
     limits.timeout = caps_.timeout;
     limits.max_memory_bytes = 100 * 1024 * 1024;
     limits.allow_network = caps_.needs_network;
     limits.allow_filesystem = caps_.needs_filesystem;
 
-    if (caps_.needs_network &&!caps_.allowed_domains.empty()) {
+    if (caps_.needs_network && !caps_.allowed_domains.empty()) {
         limits.allowed_domains = caps_.allowed_domains;
     }
     if (caps_.needs_filesystem &&!caps_.allowed_paths.empty()) {
@@ -87,7 +102,6 @@ security::Result<std::string> Tool::execute(const std::string& input) {
     std::string error_msg;
     bool success = false;
 
-    security::Sandbox sandbox;
     auto sandbox_result = security::Sandbox::execute_in_process(
     [&]() -> int {
         auto run_res = func_(input);
@@ -99,16 +113,17 @@ security::Result<std::string> Tool::execute(const std::string& input) {
             error_msg = run_res.error();
             return 1;
         }
-    },
-    limits
-);
+    }, limits);
 
     if (sandbox_result.is_err()) {
+        std::string msg = sandbox_result.error();
+        if (msg.empty()) msg = "Sandbox execution failed (macOS fork/seccomp blocked)";
+        if (!error_msg.empty()) msg += " | Tool error: " + error_msg;
         // This now means true timeout/kill, not just "gave up waiting"
-        return security::Result<std::string>::err(sandbox_result.error() + (error_msg.empty()?"": " | Tool error: " + error_msg));
+        return security::Result<std::string>::err(msg);
     }
     if (!success) {
-        return security::Result<std::string>::err(error_msg);
+        return security::Result<std::string>::err(error_msg.empty() ? "Tool execution failed" : error_msg);
     }
 
     if (result.size() > caps_.max_output_bytes) {
