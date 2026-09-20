@@ -4,88 +4,31 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+
 jobs:
   build:
-    name: ${{ matrix.os }} / ${{ matrix.compiler }}
-    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            compiler: gcc
-            cc: gcc
-            cxx: g++
-          - os: ubuntu-latest
-            compiler: clang
-            cc: clang
-            cxx: clang++
-          - os: macos-latest
-            compiler: clang
-            cc: clang
-            cxx: clang++
-          - os: windows-latest
-            compiler: msvc
-            cc: cl
-            cxx: cl
-          - os: windows-latest
-            compiler: mingw
-            cc: gcc
-            cxx: g++
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Install deps (Ubuntu)
-        if: startsWith(matrix.os, 'ubuntu')
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: Configure
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libsodium-dev libcurl4-openssl-dev libzstd-dev libopenblas-dev
-
-      - name: Install deps (macOS)
-        if: startsWith(matrix.os, 'macos')
-        run: |
-          brew install cmake ninja libsodium curl zstd nlohmann-json openblas
-
-      - name: Setup MinGW (Windows)
-        if: matrix.compiler == 'mingw'
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-libsodium
-            mingw-w64-ucrt-x86_64-curl
-            mingw-w64-ucrt-x86_64-zstd
-            mingw-w64-ucrt-x86_64-nlohmann-json
-            mingw-w64-ucrt-x86_64-openblas
-
-      - name: Configure (Unix)
-        if: matrix.compiler != 'mingw' && matrix.compiler != 'msvc'
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
-        run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
-
-      - name: Configure (MSVC)
-        if: matrix.compiler == 'msvc'
-        run: |
-          cmake -B build -G "Visual Studio 17 2022" -A x64 -DBUILD_TESTS=ON
-
-      - name: Configure (MinGW)
-        if: matrix.compiler == 'mingw'
-        shell: msys2 {0}
-        run: |
-          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON
-
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=OFF -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release
+          else
+            cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=ON -DGGML_CCACHE=ON -DCMAKE_BUILD_TYPE=Release
+          fi
+        shell: bash
+      
       - name: Build
         run: cmake --build build --config Release -j2
-
+      
       - name: Test
-        working-directory: build
         run: ctest --output-on-failure -C Release -j2
+        working-directory: build
