@@ -30,14 +30,15 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
-        run: |
-          choco install libsodium -y
-          choco install curl -y
+        run: C:\msys64\usr\bin\bash -lc "pacman -Sy --noconfirm --needed mingw-w64-x86_64-curl mingw-w64-x86_64-libsodium"
         shell: powershell
 
       - name: Configure
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            export CC=C:/msys64/mingw64/bin/gcc.exe
+            export CXX=C:/msys64/mingw64/bin/g++.exe
+            export PATH=/c/msys64/mingw64/bin:$PATH
             cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=OFF -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release
           else
             cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=ON -DGGML_CCACHE=ON -DCMAKE_BUILD_TYPE=Release
