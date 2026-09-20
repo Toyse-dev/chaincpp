@@ -20,15 +20,19 @@ jobs:
 
       - name: Install dependencies (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
-        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libssl-dev
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libssl-dev libsodium-dev
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macos-latest'
-        run: brew install curl
+        run: brew install curl libsodium
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'windows-latest'
-        run: choco install curl -y
+        run: |
+          choco install libsodium -y
+          choco install curl -y
         shell: powershell
 
       - name: Configure
