@@ -30,15 +30,17 @@ jobs:
 
       - name: Install dependencies (Windows)
         if: matrix.os == 'windows-latest'
-        run: C:\msys64\usr\bin\bash -lc "pacman -Sy --noconfirm --needed mingw-w64-x86_64-curl mingw-w64-x86_64-libsodium"
+        run: C:\msys64\usr\bin\bash -lc "pacman -Sy --noconfirm --needed mingw-w64-x86_64-curl mingw-w64-x86_64-libsodium mingw-w64-x86_64-pkgconf"
         shell: powershell
 
       - name: Configure
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            export PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig
             cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=OFF -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release \
               -DCURL_INCLUDE_DIR=C:/msys64/mingw64/include \
               -DCURL_LIBRARY=C:/msys64/mingw64/lib/libcurl.dll.a \
+              -DPKG_CONFIG_EXECUTABLE=C:/msys64/mingw64/bin/pkg-config.exe \
               -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
           else
             cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=ON -DGGML_CCACHE=ON -DCMAKE_BUILD_TYPE=Release
