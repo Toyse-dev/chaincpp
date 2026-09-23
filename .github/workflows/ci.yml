@@ -36,10 +36,10 @@ jobs:
       - name: Configure
         run: |
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            export CC=C:/msys64/mingw64/bin/gcc.exe
-            export CXX=C:/msys64/mingw64/bin/g++.exe
-            export PATH=/c/msys64/mingw64/bin:$PATH
-            cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=OFF -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release
+            cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=OFF -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release \
+              -DCURL_INCLUDE_DIR=C:/msys64/mingw64/include \
+              -DCURL_LIBRARY=C:/msys64/mingw64/lib/libcurl.dll.a \
+              -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
           else
             cmake -B build -G Ninja -DBUILD_TESTS=ON -DLLAMA_CCACHE=ON -DGGML_CCACHE=ON -DCMAKE_BUILD_TYPE=Release
           fi
