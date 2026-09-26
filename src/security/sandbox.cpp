@@ -86,10 +86,9 @@ void Sandbox::sanitize_environment() {
 
 bool Sandbox::check_network_allowed(bool allowed) { return allowed; }
 
-// === execute_safe - FIXED: NO RLIMIT IN PARENT ===
+#ifdef _WIN32
 Result<void> Sandbox::execute_safe(
-    std::function<Result<void>()> func, const SecurityLimits& limits
-) {
+    std::function<Result<void>()> func, const SecurityLimits& limits) {
     std::cerr << "[SECURITY WARNING] Sandbox::execute_safe is cooperative only - cannot kill threads. "
                  "Use execute_in_process for untrusted code.\n";
 
@@ -124,7 +123,6 @@ Result<void> Sandbox::execute_safe(
         return Result<void>::err("Execution timeout exceeded (COOPERATIVE ONLY: func may continue in background - "
             "use execute_in_process for true isolation)");
     }
-
     if (worker.joinable()) worker.join();
 
     if (!error_msg.empty()) return Result<void>::err(error_msg);
@@ -133,7 +131,7 @@ Result<void> Sandbox::execute_safe(
 
 // execute_in_process - TRUE ISOLATION
 Result<void> Sandbox::execute_in_process(std::function<int()> func, const SecurityLimits& limits) {
-#ifdef _WIN32
+    // Same as safe for v0.1 on Windows - will be real child process in v0.2
     std::atomic<int> exit_code{0};
     std::atomic<bool> done{false};
     std::thread worker([&]() {
@@ -141,7 +139,7 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
         done = true;
     });
     auto start = std::chrono::steady_clock::now();
-    while (!done) {
+    while (!done.load()) {
         auto elapsed = std::chrono::steady_clock::now() - start;
         if (elapsed > limits.timeout) {
             worker.detach();
@@ -155,6 +153,7 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
         return Result<void>::err("Tool execution failed with code " + std::to_string(exit_code));
     }
     return Result<void>::ok();
+}
 #else
     pid_t pid = fork();
     if (pid == -1) {
@@ -191,5 +190,3 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
     }
 #endif
 }
-
-} // namespace chaincpp::security

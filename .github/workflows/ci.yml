@@ -51,5 +51,5 @@ jobs:
         run: cmake --build build --config Release -j2
       
       - name: Test
-        run: ctest --output-on-failure -C Release -j2
+        run: ctest --output-on-failure -C Release --timeout 30 -j2
         working-directory: build
