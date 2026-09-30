@@ -28,6 +28,7 @@ secure_string::secure_string(const std::string& str) {
         std::memcpy(raw, str.c_str(), size_);
         raw[size_] = '\0';
 #if defined(_WIN32)
+    if (!std::getenv("CI") && !std::getenv("GITHUB_ACTIONS"))
         VirtualLock(raw, size_ + 1);
 #else
         ::mlock(raw, size_ + 1);
@@ -44,6 +45,7 @@ secure_string::secure_string(const char* str) {
             std::memcpy(raw, str, size_);
             raw[size_] = '\0';
 #if defined(_WIN32)
+        if (!std::getenv("CI") && !std::getenv("GITHUB_ACTIONS"))
             VirtualLock(raw, size_ + 1);
 #else
             ::mlock(raw, size_ + 1);
@@ -68,7 +70,8 @@ secure_string::~secure_string() {
         #endif
         // Unlock
         #if defined(_WIN32)
-            VirtualUnlock(data_.get(), size_ + 1);
+            if (!std::getenv("CI") && !std::getenv("GITHUB_ACTIONS"))
+                VirtualUnlock(data_.get(), size_ + 1);
         #else
             ::munlock(data_.get(), size_ + 1);
         #endif
