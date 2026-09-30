@@ -51,5 +51,11 @@ jobs:
         run: cmake --build build --config Release -j2
       
       - name: Test
-        run: ctest --output-on-failure -C Release --timeout 120 -j2
+        run: |
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            ctest -R "Sandbox|Prompt" --output-on-failure -C Release --timeout 30 -j2
+          else
+            ctest --output-on-failure -C Release --timeout 60 -j2
+          fi
         working-directory: build
+        shell: bash

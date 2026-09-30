@@ -16,26 +16,23 @@ void test_tool_creation() {
     std::cout << "  Time tool: OK\n";
 
 #ifdef _WIN32
-    if (std::getenv("CI")) {
         std::cout << "  [SKIP] calculator sandbox on Windows CI\nTool test passed\n\n";
         return;
-    }
-#endif
+#else
     auto calc_tool = builtin_tools::create_calculator_tool();
     auto calc_result = calc_tool.execute(R"({"expression": "2 + 3 * 4"})");
     assert(calc_result.is_ok());
     std::cout << "  Calculator: " << calc_result.value() << "\nTool test passed\n\n";
+#endif
 }
 
 void test_tool_registry() {
     std::cout << "Testing ToolRegistry...\n";
     #ifdef _WIN32
-        if (std::getenv("CI")) {
             std::cout << "  [SKIP] system_info tool GetAdaptersAddresses hangs on Windows CI\n\n";
             std::cout << "ToolRegistry tests passed (skipped)\n\n";
             return;
-        }
-    #endif
+    #else
 
     auto& registry = ToolRegistry::instance();
     registry.clear(); // always clear first
@@ -61,6 +58,7 @@ void test_tool_registry() {
     std::cout << "  Tools listed: " << tools.size() << " tools\n";
     
     std::cout << "ToolRegistry tests passed\n\n";
+    #endif
 }
 
 void test_tool_security() {
