@@ -1,7 +1,7 @@
 #include "chaincpp/security/sandbox.hpp"
 #include <iostream>
 #include <vector>
-#include <chrono> // Added for timing
+#include <chrono>
 #include <thread>
 
 using namespace chaincpp::security;
@@ -38,10 +38,10 @@ int main() {
         }, SecurityLimits::safe_defaults());
         
         if (result.is_err() && result.error() == "Test error message") {
-            std::cout << "✓ PASSED\n";
+            std::cout << "PASSED\n";
             tests_passed++;
         } else {
-            std::cout << "✗ FAILED\n";
+            std::cout << "FAILED\n";
             tests_failed++;
         }
     }
@@ -52,7 +52,6 @@ int main() {
         auto start = std::chrono::steady_clock::now();
         
         auto result = Sandbox::execute_safe([]() -> Result<void> {
-            // Sleep for 2 seconds to force a 1-second timeout breach
             std::this_thread::sleep_for(std::chrono::seconds(2));
             return Result<void>::ok();
         }, SecurityLimits::strict());
@@ -73,7 +72,7 @@ int main() {
     {
         std::cout << "Test 4: Successful computation... ";
         auto result = Sandbox::execute_safe([]() -> Result<void> {
-            [[maybe_unused]] int sum = 0; // FIXED: Added [[maybe_unused]] to prevent compiler errors
+            [[maybe_unused]] int sum = 0;
             for (int i = 0; i < 1000; i++) {
                 sum += i;
             }
@@ -113,25 +112,60 @@ int main() {
         }
     }
     
-    // Test 6: Memory allocation test
+    // Test 6: Large memory allocation prevention - FIXED TO ACTUALLY ASSERT
     {
-        std::cout << "Test 6: Large memory allocation prevention... ";
+        std::cout << "Test 6: Large memory allocation prevention (1MB limit, try 10MB)... ";
         auto strict_limits = SecurityLimits::strict();
-        strict_limits.max_memory_bytes = 1024 * 1024; // 1MB limit
-        
-        auto result = Sandbox::execute_safe([&]() -> Result<void> {
-            // Try to allocate 10MB
+        strict_limits.max_memory_bytes = 1 * 1024 * 1024; // 1MB limit
+        strict_limits.timeout = std::chrono::milliseconds(5000);
+
+        auto result = Sandbox::execute_safe([]() -> Result<void> {
             try {
+                // Try to allocate 10MB - 10x the limit
                 std::vector<char> large_buffer;
                 large_buffer.resize(10 * 1024 * 1024);
+                // If we reach here, allocation SUCCEEDED despite limit
+                // Touch the memory to force actual allocation (not just virtual)
+                for (size_t i = 0; i < large_buffer.size(); i += 4096) {
+                    large_buffer[i] = 'x';
+                }
+                return Result<void>::ok(); // This means limit FAILED
+            } catch (const std::bad_alloc&) {
+                return Result<void>::err("Allocation failed - bad_alloc");
             } catch (...) {
-                return Result<void>::err("Allocation failed");
+                return Result<void>::err("Allocation failed - exception");
             }
-            return Result<void>::ok();
         }, strict_limits);
         
-        std::cout << "PASSED (handled gracefully)\n";
-        tests_passed++;
+        // CORRECT ASSERTION: result must be err() if limit is enforced
+        // If sandbox kills the process via setrlimit/Job Object -> is_err()
+        // If new throws bad_alloc -> is_err() with "Allocation failed"
+        // If it returns ok() -> limit was NOT enforced = FAIL
+        if (result.is_err()) {
+            std::cout << "PASSED (prevented: " << result.error() << ")\n";
+            tests_passed++;
+        } else {
+            std::cout << "FAILED (10MB allocation succeeded despite 1MB limit - false positive!)\n";
+            tests_failed++;
+        }
+
+        // Positive control: small allocation should still work
+        std::cout << "Test 6b: Small allocation within limit... ";
+        auto normal_limits = SecurityLimits::safe_defaults();
+        normal_limits.max_memory_bytes = 10 * 1024 * 1024; // 10MB limit
+        auto ok_result = Sandbox::execute_safe([]() -> Result<void> {
+            std::vector<char> small(512 * 1024, 'x'); // 512KB
+            small[0] = 'y';
+            return Result<void>::ok();
+        }, normal_limits);
+        
+        if (ok_result.is_ok()) {
+            std::cout << "PASSED\n";
+            tests_passed++;
+        } else {
+            std::cout << "FAILED (512KB should succeed with 10MB limit): " << ok_result.error() << "\n";
+            tests_failed++;
+        }
     }
     
     // Summary
