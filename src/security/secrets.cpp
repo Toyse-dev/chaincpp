@@ -148,7 +148,9 @@ Result<void> SecretsManager::store_key(const std::string& service, const secure_
 
     // Explicit assignment bypasses brace-init conversion restrictions
     CachedKey cache_entry;
-    cache_entry.key = secure_string(key.to_string().c_str());
+    cache_entry.key = key.with_c_str([](const char* raw) { 
+        return secure_string(raw);
+    });
     cache_entry.timestamp = std::chrono::steady_clock::now();
     cache_[service] = std::move(cache_entry);
 
@@ -163,10 +165,12 @@ Result<secure_string> SecretsManager::get_key(const std::string& service) {
         auto now = std::chrono::steady_clock::now();
         if (now - it->second.timestamp < CACHE_TTL) {
             //  Re-instantiate secure_string cleanly
-            return Result<secure_string>::ok(secure_string(it->second.key.to_string()));
+            return it->second.key.with_c_str([](const char* raw) {
+                return Result<secure_string>::ok(secure_string(raw));
+            });
         }
     }
-    return Result<secure_string>::err("Persistent storage not implemented in v0.1" + service);
+    return Result<secure_string>::err("Persistent storage not implemented in v0.1 " + service);
 }
 
 bool SecretsManager::has_key(const std::string& service) const {
