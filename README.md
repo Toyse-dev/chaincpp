@@ -144,6 +144,8 @@ ctest --test-dir build --output-on-failure
 
 > **Troubleshooting Build Failures:** If you log a compiler error stating `llama_batch_add was not declared`, your environment is correctly operating on b4242. Make sure you utilize manual batch array fills exactly as structured inside `tests/benchmark_local.cpp`.
 
+> If you have slow network, clone b4242 to `external/llama.cpp` or set `LLAMA_CPP_PATH`.
+
 ---
 
 ## Known Limitations
