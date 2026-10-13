@@ -36,14 +36,24 @@ set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 set(CMAKE_C_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
 set(CMAKE_CXX_COMPILER_LAUNCHER "" CACHE STRING "" FORCE)
 
-# If you have a local copy at C:/dev/llama.cpp or external/llama.cpp, use it to save data
-if(EXISTS "C:/dev/llama.cpp/CMakeLists.txt")
-    message(STATUS "Using local llama.cpp at C:/dev/llama.cpp")
-    add_subdirectory(C:/dev/llama.cpp ${CMAKE_BINARY_DIR}/_deps/llama-build)
-elseif(EXISTS ${CMAKE_SOURCE_DIR}/external/llama.cpp/CMakeLists.txt)
-    message(STATUS "Using local llama.cpp at external/llama.cpp")
-    add_subdirectory(${CMAKE_SOURCE_DIR}/external/llama.cpp ${CMAKE_BINARY_DIR}/_deps/llama-build)
-else()
+set(LLAMA_CANDIDATE_PATHS
+    ${CMAKE_SOURCE_DIR}/external/llama.cpp
+    $ENV{LLAMA_CPP_PATH}
+)
+
+set(LLAMA_FOUND_LOCAL FALSE)
+foreach(PATH_CAND IN LISTS LLAMA_CANDIDATE_PATHS)
+    if(PATH_CAND AND EXISTS "${PATH_CAND}/CMakeLists.txt")
+        message(STATUS "Using local llama.cpp at ${PATH_CAND}")
+        add_subdirectory(${PATH_CAND} ${CMAKE_BINARY_DIR}/_deps/llama-build)
+        set(LLAMA_FOUND_LOCAL TRUE)
+        break()
+    endif()
+endforeach()
+
+if(NOT LLAMA_FOUND_LOCAL)
+    message(STATUS "No local llama.cpp found, fetching b4242...")
+    include(FetchContent)
     FetchContent_Declare(
         llama
         GIT_REPOSITORY https://github.com/ggerganov/llama.cpp.git
