@@ -1,5 +1,6 @@
 #include "chaincpp/rag/embeddings.hpp"
 #include <curl/curl.h>
+#include <sodium.h>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <cmath>
@@ -71,7 +72,6 @@ security::Result<std::vector<std::vector<float>>> OpenAIEmbeddings::embed_batch(
     };
     
     std::string body = request_body.dump();
-    std::string auth_header = "Authorization: Bearer " + api_key_.to_string();
     std::string url = config_.base_url + "/embeddings";
     
     // Use CURL for request
@@ -81,8 +81,13 @@ security::Result<std::vector<std::vector<float>>> OpenAIEmbeddings::embed_batch(
     }
     
     struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Content-Type: application/json");
-    headers = curl_slist_append(headers, auth_header.c_str());
+    std::string auth_header_storage;
+
+    api_key_.with_c_str([&](const char* raw_key) {
+        auth_header_storage = std::string("Authorization: Bearer ") + raw_key;
+        headers = curl_slist_append(headers, auth_header_storage.c_str());
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+    });
     
     std::string response;
     
@@ -111,6 +116,11 @@ security::Result<std::vector<std::vector<float>>> OpenAIEmbeddings::embed_batch(
     
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    if (!auth_header_storage.empty()) {
+        sodium_memzero(auth_header_storage.data(), auth_header_storage.size());
+    } 
+    curl_slist_free_all(headers);
     
     if (res != CURLE_OK) {
         return security::Result<std::vector<std::vector<float>>>::err(curl_easy_strerror(res));
