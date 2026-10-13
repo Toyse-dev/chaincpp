@@ -78,6 +78,7 @@ static security::Result<std::string> execute_secure_request(
     struct curl_slist* headers = nullptr;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, auth_header.c_str());
+    headers = curl_slist_append(headers, "Accept: application/json");
     headers = curl_slist_append(headers, "HTTP-Referer: https://github.com");
     headers = curl_slist_append(headers, "X-Title: chaincpp-framework");
     
@@ -132,7 +133,7 @@ security::Result<std::unique_ptr<OpenAIChat>> OpenAIChat::create(Config cfg) {
 }
 OpenAIChat::~OpenAIChat() = default;
 
-// Overload 1: Satisfies the pure virtual interface contract for BaseLLM
+// Satisfies the pure virtual interface contract for BaseLLM
 security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& messages, const ModelConfig& config) {
     json body = {
         {"model", config.model_name.empty()? "gpt-4o-mini" : config.model_name},
@@ -153,13 +154,24 @@ security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& m
     }
     body["messages"] = json_messages;
 
+    // Build auth header inside with_c_str scope, zero after request
     std::string auth;
     api_key_.with_c_str([&](const char* raw){
         auth = "Authorization: Bearer " + std::string(raw);
     });
-    auto res = execute_secure_request(config_.base_url + "/chat/completions", body.dump(), auth, config.timeout);
-    sodium_memzero(auth.data(), auth.size()); // Zero sensitive memory immediately after use
-    return res;
+    auto timeout = config.timeout.count()>0? config.timeout : std::chrono::seconds(30);
+    auto res = execute_secure_request(config_.base_url + "/v1/messages", body.dump(), auth, timeout);
+    sodium_memzero(auth.data(), auth.size());
+    if (res.is_err()) return res;
+    try {
+        auto parsed = json::parse(res.value());
+        last_usage_.prompt_tokens = parsed.value("usage", json::object()).value("input_tokens", 0);
+        last_usage_.completion_tokens = parsed.value("usage", json::object()).value("output_tokens", 0);
+        last_usage_.total_tokens = last_usage_.prompt_tokens + last_usage_.completion_tokens;
+        return security::Result<std::string>::ok(parsed["content"][0]["text"].get<std::string>());
+    } catch (...) {
+        return security::Result<std::string>::err("Failed parsing Anthropic response");
+    }
 }
 
 // Overload 2: Satisfies localized streaming API execution loop
@@ -261,6 +273,9 @@ security::Result<std::string> AnthropicChat::generate(const std::vector<Message>
     if (res.is_err()) return res;
     try {
         auto parsed = json::parse(res.value());
+        last_usage_.prompt_tokens = parsed.value("usage", json::object()).value("input_tokens", 0);
+        last_usage_.completion_tokens = parsed.value("usage", json::object()).value("output_tokens", 0);
+        last_usage_.total_tokens = last_usage_.prompt_tokens + last_usage_.completion_tokens;
         return security::Result<std::string>::ok(parsed["content"][0]["text"].get<std::string>());
     } catch (...) {
         return security::Result<std::string>::err("Failed parsing Anthropic response");
@@ -273,7 +288,7 @@ security::Result<std::string> AnthropicChat::generate(const std::vector<Message>
     cfg.max_tokens = 4096;
     cfg.temperature = 0.7f;
     cfg.timeout = std::chrono::seconds(30);
-
+    
     json body = {
         {"model", cfg.model_name},
         {"max_tokens", cfg.max_tokens},
@@ -307,16 +322,10 @@ security::Result<std::string> AnthropicChat::generate(const std::vector<Message>
     }
 }
 
-security::Result<void> AnthropicChat::stream_generate(
-    const std::vector<Message>& messages,
-    StreamCallback on_chunk,
-    const ModelConfig& config
-) {
+security::Result<void> AnthropicChat::stream_generate(const std::vector<Message>& messages, StreamCallback on_chunk, const ModelConfig& config) {
     auto result = generate(messages, config.model_name.empty()? ModelConfig{} : config);
     if (result.is_ok()) {
-        if (on_chunk) {
-            on_chunk(result.value());
-        }
+        if (on_chunk) on_chunk(result.value());
         return security::Result<void>::ok();
     }
     return security::Result<void>::err(result.error());
@@ -368,10 +377,10 @@ public:
         if (!model_ || text.empty()) return 0;
         int n = llama_tokenize(model_, text.c_str(), text.size(), nullptr, 0, true, true);
         if (n < 0) n = -n;
-        if (n <= 0) return std::max(size_t(1), text.length() / 4);
+        if (n <= 0) return 1;
         std::vector<llama_token> tmp(n);
         int n2 = llama_tokenize(model_, text.c_str(), text.size(), tmp.data(), tmp.size(), true, true);
-        if (n2 < 0) return std::max(size_t(1), text.length() / 4);
+        if (n2 < 0) return static_cast<size_t>(-n2);
         return static_cast<size_t>(n2);
     }
     
@@ -397,16 +406,26 @@ public:
             return security::Result<std::string>::ok("");
         }
 
-        // Native autoregressive llama_decode evaluation token stream sampler loop
-        struct llama_batch batch = llama_batch_get_one(tokens.data(), tokens.size());
+        // b4242 compatible - manual batch fill (no llama_batch_add)
+        llama_batch batch = llama_batch_init(512, 0, 1);
+        batch.n_tokens = n_tokens;
+        for (int i = 0; i < n_tokens; i++) {
+            batch.token[i] = tokens[i];
+            batch.pos[i] = i;
+            batch.n_seq_id[i] = 1;
+            batch.seq_id[i][0] = 0;
+            batch.logits[i] = false;
+        }
+        batch.logits[batch.n_tokens - 1] = true;
         
         if (llama_decode(ctx_, batch) != 0) {
+            llama_batch_free(batch);
             return security::Result<std::string>::err("Local inference failure: Initial batch evaluation matrix sequence failed.");
         }
 
         // llama-sampler - 0 allocs in loop
         llama_sampler* smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-        llama_sampler_chain_add(smpl, llama_sampler_init_temp(config.temperature > 0? config.temperature : 0.7f));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(config.temperature > 0 ? config.temperature : 0.7f));
         llama_sampler_chain_add(smpl, llama_sampler_init_top_p(0.95f, 1));
         llama_sampler_chain_add(smpl, llama_sampler_init_dist(0));
 
@@ -422,10 +441,16 @@ public:
                 len = llama_token_to_piece(model_, tok, b.data(), b.size(), 0, true); 
                 if (len > 0) out.append(b.data(), len); 
             } else if (len > 0) out.append(buf, len);
-            batch = llama_batch_get_one(&tok, 1);
+            batch.n_tokens = 1;
+            batch.token[0] = tok;
+            batch.pos[0] = n_tokens + i;
+            batch.n_seq_id[0] = 1;
+            batch.seq_id[0][0] = 0;
+            batch.logits[0] = true;
             if (llama_decode(ctx_, batch) != 0) break;
         }
         llama_sampler_free(smpl);
+        llama_batch_free(batch);
         return security::Result<std::string>::ok(std::move(out));
     }
     
@@ -479,11 +504,7 @@ security::Result<std::string> LocalLLM::generate(const std::vector<Message>& mes
     return security::Result<std::string>::ok(std::move(result_str));
 }
 
-security::Result<void> LocalLLM::stream_generate(
-    const std::vector<Message>& messages,
-    StreamCallback on_chunk,
-    const ModelConfig& config
-) {
+security::Result<void> LocalLLM::stream_generate(const std::vector<Message>& messages, StreamCallback on_chunk, const ModelConfig& config) {
     // Explicitly pass nullptr to select overload 2 unambiguously
     auto result = generate(messages, nullptr);
     if (result.is_ok()) {
@@ -494,18 +515,29 @@ security::Result<void> LocalLLM::stream_generate(
 }
 
 // Implementation of count tokens
+static size_t count_via_llama(llama_model* model, const std::string& text) {
+    if (!model || text.empty()) return 0;
+    int n = llama_tokenize(model, text.c_str(), (int)text.size(), nullptr, 0, true, false);
+    if (n < 0) n = -n;
+    if (n <= 0) return 1;
+    std::vector<llama_token> buf(n);
+    int n2 = llama_tokenize(model, text.c_str(), (int)text.size(), buf.data(), (int)buf.size(), true, false);
+    if (n2 < 0) return static_cast<size_t>(n);
+    return static_cast<size_t>(n2);
+}
+
 size_t OpenAIChat::count_tokens(const std::string& text) const {
     if (text.empty()) return 0;
-    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token 4 characters
+    size_t words = 1; for (unsigned char c : text) if (std::isspace(c)) words++;
+    return std::max(size_t(1), (words * 4 + 2) / 3);
 }
-
 size_t AnthropicChat::count_tokens(const std::string& text) const {
     if (text.empty()) return 0;
-    return std::max(size_t(1), text.length() / 4); // Rough heuristic: 1 token 4 characters
+    size_t words = 1; for (unsigned char c : text) if (std::isspace(c)) words++;
+    return std::max(size_t(1), (words * 4 + 2) / 3);
 }
-
 size_t LocalLLM::count_tokens(const std::string& text) const {
-    if (!impl_) return std::max(size_t(1), text.length() / 4);
+    if (!impl_) { size_t words = 1; for (unsigned char c : text) if (std::isspace(c)) words++; return std::max(size_t(1), (words * 4 + 2) / 3); }
     return impl_->count_tokens_real(text);
 }
 

@@ -100,6 +100,17 @@ protected: // Change from private to protected to remove allocation hacks safely
     
     security::secure_string api_key_;
     Config config_;
+public:
+    struct TokenUsage {
+        size_t prompt_tokens = 0;
+        size_t completion_tokens = 0;
+        size_t total_tokens = 0;
+    };
+    TokenUsage get_last_usage() const {
+        return last_usage_;
+    }
+private:
+    TokenUsage last_usage_;
     
     security::Result<std::string> make_request(
         const std::vector<Message>& messages,
@@ -135,9 +146,19 @@ public:
     
 protected:
     AnthropicChat() = default;
-    
     security::secure_string api_key_;
     Config config_;
+public:
+    struct TokenUsage {
+        size_t prompt_tokens=0;
+        size_t completion_tokens=0;
+        size_t total_tokens=0;
+    };
+    TokenUsage get_last_usage() const {
+        return last_usage_;
+    }
+private:
+    TokenUsage last_usage_;
 };
 
 // Helper class for model discovery
