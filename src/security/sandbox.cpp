@@ -155,9 +155,6 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
     } else {
         int status = 0;
         auto start = std::chrono::steady_clock::now();
-        size_t peak_rss = 0;
-        const size_t overhead = 250 * 1024 * 1024;
-        const size_t effective_limit = limits.max_memory_bytes + overhead;
         while (true) {
             pid_t w = waitpid(pid, &status, WNOHANG);
             if (w == pid) {
@@ -175,7 +172,8 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
             }
 #ifdef __APPLE__
             size_t rss = UnixSandboxImpl::get_child_rss(pid);
-            if (rss > peak_rss) peak_rss = rss;
+            const size_t overhead = 250 * 1024 * 1024;
+            const size_t effective_limit = limits.max_memory_bytes + overhead;
             if (rss > 0 && rss > effective_limit) {
                 kill(pid, SIGKILL);
                 waitpid(pid, &status, 0);
