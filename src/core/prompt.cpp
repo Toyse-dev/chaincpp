@@ -65,7 +65,7 @@ std::string OutputSanitizer::escape(std::string_view input, Context context) {
 bool OutputSanitizer::has_dangerous_patterns(std::string_view input) {
     // Check for common dangerous patterns
     static const std::vector<std::string> dangerous = {
-        "system(", "exec(", "popen(", "eval(", "rm -rf", "${", "'"
+        "system(", "exec(", "popen(", "eval(", "rm -rf", "${",
     };
 
     std::string lower;
