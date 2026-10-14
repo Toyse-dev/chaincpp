@@ -147,6 +147,9 @@ endif()
 
 target_compile_definitions(chaincpp PRIVATE $<$<CONFIG:Debug>:CHAINCPP_DEBUG>)
 
+# C ABI
+target_sources(chaincpp PRIVATE src/c_api.cpp)
+
 # --- Testing ---
 if(BUILD_TESTS)
     enable_testing()
