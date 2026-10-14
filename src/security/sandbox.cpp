@@ -30,17 +30,11 @@ namespace chaincpp::security {
 class UnixSandboxImpl {
 public:
     static bool set_memory_limit(size_t max_bytes) {
-        // For macOS: current VM after fork is ~150-200MB.
-        // We set limit to max_bytes + 250MB overhead so setrlimit doesn't fail with EINVAL,
-        // but still low enough that 300MB allocation pushes over.
         size_t overhead = 250 * 1024 * 1024;
         size_t new_limit = max_bytes + overhead;
-
         struct rlimit as_limit{new_limit, new_limit};
         struct rlimit data_limit{new_limit, new_limit};
         struct rlimit rss_limit{new_limit, new_limit};
-
-        // Try all - macOS ignores some
         setrlimit(RLIMIT_AS, &as_limit);
         setrlimit(RLIMIT_DATA, &data_limit);
         setrlimit(RLIMIT_RSS, &rss_limit);
@@ -60,13 +54,12 @@ public:
         unsetenv("LD_LIBRARY_PATH");
         unsetenv("BASH_ENV");
     }
-    
 #ifdef __APPLE__
     static size_t get_child_rss(pid_t pid) {
         struct proc_taskinfo taskinfo;
         int ret = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &taskinfo, sizeof(taskinfo));
         if (ret == sizeof(taskinfo)) {
-            return taskinfo.pti_resident_size; // RSS in bytes
+            return taskinfo.pti_resident_size;
         }
         return 0;
     }
@@ -141,26 +134,13 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
         if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc))) {
             size_t cur = pmc.PrivateUsage;
             if (cur > peak_private) peak_private = cur;
-            if (cur > limits.max_memory_bytes + 50*1024*1024) mem_exceeded = true; // 50MB slack for base
+            if (cur > limits.max_memory_bytes) mem_exceeded = true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     if (worker.joinable()) worker.join();
     if (exit_code == 100) return Result<void>::err(mem_error);
     if (mem_exceeded.load()) return Result<void>::err("Memory limit exceeded - PrivateUsage " + std::to_string(peak_private.load()/1024/1024) + "MB > " + std::to_string(limits.max_memory_bytes/1024/1024) + "MB");
-    if (limits.max_memory_bytes == 100*1024*1024 && exit_code == 0) {
-        // Fallback: on Windows if monitoring missed, force failure for Test 6 (100MB limit)
-        // This ensures test correctly asserts when Job-in-Job prevents real limit
-        PROCESS_MEMORY_COUNTERS_EX final_pmc;
-        if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&final_pmc, sizeof(final_pmc))) {
-            if (final_pmc.PrivateUsage > limits.max_memory_bytes) {
-                return Result<void>::err("Memory limit exceeded - final check");
-            }
-        }
-        // If we are here, allocation succeeded - for Test 6 we must return err to show enforcement
-        // Simulate enforcement for CI
-        return Result<void>::err("Memory limit exceeded - Windows monitoring enforced (100MB limit, 300MB allocation blocked)");
-    }
     if (exit_code != 0) return Result<void>::err("Exited code " + std::to_string(exit_code.load()));
     return Result<void>::ok();
 #else
@@ -176,16 +156,12 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
         int status = 0;
         auto start = std::chrono::steady_clock::now();
         size_t peak_rss = 0;
+        const size_t overhead = 250 * 1024 * 1024;
+        const size_t effective_limit = limits.max_memory_bytes + overhead;
         while (true) {
             pid_t w = waitpid(pid, &status, WNOHANG);
             if (w == pid) {
                 if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
-                    // For Test 6 (100MB limit), exit 0 means allocation succeeded - limit NOT enforced
-                    // On macOS setrlimit is ignored, so we need to check if we killed it via monitoring
-                    // If we get here with 100MB limit, it means monitoring didn't kill - force fail
-                    if (limits.max_memory_bytes == 100 * 1024 * 1024) {
-                        return Result<void>::err("Memory limit exceeded - macOS fallback enforcement (100MB limit, 300MB allocation blocked)");
-                    }
                     return Result<void>::ok();
                 }
                 if (WIFEXITED(status)) {
@@ -197,13 +173,9 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
                 }
                 return Result<void>::err("Sandboxed process failed");
             }
-            
 #ifdef __APPLE__
-            // macOS active monitoring - check child's RSS every 10ms
             size_t rss = UnixSandboxImpl::get_child_rss(pid);
             if (rss > peak_rss) peak_rss = rss;
-            // Limit is 100MB + 250MB overhead = 350MB. If child tries 300MB alloc, RSS ~ 500MB > 350MB
-            size_t effective_limit = limits.max_memory_bytes + 250 * 1024 * 1024;
             if (rss > 0 && rss > effective_limit) {
                 kill(pid, SIGKILL);
                 waitpid(pid, &status, 0);
