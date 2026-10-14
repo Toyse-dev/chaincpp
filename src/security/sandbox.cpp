@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <future>
 #include <cstring>
+#include <fstream>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -58,8 +59,31 @@ public:
     static size_t get_child_rss(pid_t pid) {
         struct proc_taskinfo taskinfo;
         int ret = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &taskinfo, sizeof(taskinfo));
-        if (ret == sizeof(taskinfo)) {
-            return taskinfo.pti_resident_size;
+        if (ret == sizeof(taskinfo)) return taskinfo.pti_resident_size;
+        return 0;
+    }
+#else
+    static size_t get_child_rss(pid_t pid) {
+        // Linux: read VmRSS from /proc/[pid]/status
+        std::string path = "/proc/" + std::to_string(pid) + "/status";
+        std::ifstream file(path);
+        std::string line;
+        while (std::getline(file, line)) {
+            if (line.rfind("VmRSS:", 0) == 0) {
+                size_t kb = 0;
+                // line like "VmRSS:  1234 kB"
+                sscanf(line.c_str(), "VmRSS: %zu", &kb);
+                return kb * 1024;
+            }
+        }
+        // Fallback: VmHWM or statm
+        path = "/proc/" + std::to_string(pid) + "/statm";
+        std::ifstream file2(path);
+        long rss_pages = 0;
+        if (file2 >> rss_pages) {} // first is size, second is rss
+        if (file2 >> rss_pages) {
+            long page_size = sysconf(_SC_PAGESIZE);
+            return (size_t)rss_pages * (size_t)page_size;
         }
         return 0;
     }
@@ -155,6 +179,8 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
     } else {
         int status = 0;
         auto start = std::chrono::steady_clock::now();
+        const size_t overhead = 250 * 1024 * 1024;
+        const size_t effective_limit = limits.max_memory_bytes + overhead;
         while (true) {
             pid_t w = waitpid(pid, &status, WNOHANG);
             if (w == pid) {
@@ -170,16 +196,13 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
                 }
                 return Result<void>::err("Sandboxed process failed");
             }
-#ifdef __APPLE__
+            // Active RSS monitoring for both macOS and Linux - for ALL limits
             size_t rss = UnixSandboxImpl::get_child_rss(pid);
-            const size_t overhead = 250 * 1024 * 1024;
-            const size_t effective_limit = limits.max_memory_bytes + overhead;
             if (rss > 0 && rss > effective_limit) {
                 kill(pid, SIGKILL);
                 waitpid(pid, &status, 0);
-                return Result<void>::err("Memory limit exceeded - macOS RSS " + std::to_string(rss/1024/1024) + "MB > " + std::to_string(effective_limit/1024/1024) + "MB limit (killed)");
+                return Result<void>::err("Memory limit exceeded - RSS " + std::to_string(rss/1024/1024) + "MB > " + std::to_string(effective_limit/1024/1024) + "MB limit (killed)");
             }
-#endif
             if (std::chrono::steady_clock::now() - start > limits.timeout) {
                 kill(pid, SIGKILL);
                 waitpid(pid, &status, 0);
