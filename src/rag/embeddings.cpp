@@ -119,8 +119,7 @@ security::Result<std::vector<std::vector<float>>> OpenAIEmbeddings::embed_batch(
 
     if (!auth_header_storage.empty()) {
         sodium_memzero(auth_header_storage.data(), auth_header_storage.size());
-    } 
-    curl_slist_free_all(headers);
+    }
     
     if (res != CURLE_OK) {
         return security::Result<std::vector<std::vector<float>>>::err(curl_easy_strerror(res));
