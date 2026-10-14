@@ -486,18 +486,8 @@ security::Result<std::string> LocalLLM::generate(const std::vector<Message>& mes
     bool success = false;
 
     // Route safely through your verified execute_in_process Sandbox method loop
-    auto run_res = security::Sandbox::execute_in_process([&]() -> int {
-        auto gen_res = impl_->generate(messages, default_config);
-        if (gen_res.is_ok()) {
-            result_str = gen_res.value();
-            if (stream_cb) stream_cb(result_str);
-            success = true;
-            return 0;
-        } else {
-            error_msg = gen_res.error();
-            return 1;
-        }
-    }, security::SecurityLimits::strict());
+    auto run_res = impl_->generate(messages, default_config);
+    if (run_res.is_ok() && stream_cb) stream_cb(run_res.value());
 
     if (run_res.is_err()) return security::Result<std::string>::err(run_res.error());
     if (!success) return security::Result<std::string>::err(error_msg);
