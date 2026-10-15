@@ -102,29 +102,36 @@ Result<void> Sandbox::execute_safe(std::function<Result<void>()> func, const Sec
 Result<void> Sandbox::execute_in_process(std::function<int()> func, const SecurityLimits& limits){
 #ifdef _WIN32
     std::atomic<int> exit_code{0}; std::atomic<bool> done{false}, mem_exceeded{false}; std::atomic<size_t> peak_private{0}; std::string mem_error;
-    std::thread worker([&](){ try{exit_code=func();}catch(...){exit_code=100; mem_error="Memory limit exceeded";} done=true;});
+    std::thread worker([&](){ try{exit_code=func();}catch(const std::bad_alloc&){exit_code=100; mem_error="Memory limit exceeded - bad_alloc";}catch(...){exit_code=100; mem_error="Memory limit exceeded - exception";} done=true;});
     auto start=std::chrono::steady_clock::now();
     while(!done.load()){
-        if(std::chrono::steady_clock::now()-start>limits.timeout){worker.detach(); return Result<void>::err("Timeout");}
-        PROCESS_MEMORY_COUNTERS_EX pmc; if(GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc,sizeof(pmc))){ size_t cur=pmc.PrivateUsage; if(cur>peak_private) peak_private=cur; if(cur>limits.max_memory_bytes) mem_exceeded=true; }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if(std::chrono::steady_clock::now()-start>limits.timeout){ worker.detach(); return Result<void>::err("Timeout after "+std::to_string(limits.timeout.count())+"ms"); }
+        PROCESS_MEMORY_COUNTERS_EX pmc;
+        if(GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc,sizeof(pmc))){
+            size_t cur=pmc.PrivateUsage;
+            size_t prev=peak_private.load();
+            if(cur>prev) peak_private.store(cur);
+            if(cur>limits.max_memory_bytes+20*1024*1024) mem_exceeded=true; // 20MB slack
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     if(worker.joinable()) worker.join();
-    if(exit_code==100) return Result<void>::err(mem_error);
-    if(mem_exceeded.load()) return Result<void>::err("Memory limit exceeded - "+std::to_string(peak_private/1024/1024)+"MB > "+std::to_string(limits.max_memory_bytes/1024/1024)+"MB");
-    if(exit_code!=0) return Result<void>::err("Exited "+std::to_string(exit_code.load()));
+    // Check memory exceed BEFORE exit code - this is the fix
+    if(mem_exceeded.load()){
+        return Result<void>::err("Memory limit exceeded - PrivateUsage "+std::to_string(peak_private.load()/1024/1024)+"MB > "+std::to_string(limits.max_memory_bytes/1024/1024)+"MB");
+    }
+    if(exit_code==100) return Result<void>::err(mem_error.empty()?"Memory limit exceeded":mem_error);
+    if(exit_code!=0) return Result<void>::err("Exited code "+std::to_string(exit_code.load()));
     return Result<void>::ok();
 #else
     pid_t pid=fork(); if(pid==-1) return Result<void>::err("fork() failed");
     if(pid==0){ UnixSandboxImpl::set_memory_limit(limits.max_memory_bytes); UnixSandboxImpl::set_cpu_limit(limits.timeout); UnixSandboxImpl::sanitize_environment(); _exit(func()); }
     else{
         int status=0; auto start=std::chrono::steady_clock::now();
-        // FIX: On Linux, child starts with ~few MB RSS, so enforce against the raw limit (+ small slack for runtime)
-        // On macOS, child starts with ~150MB due to dyld, so keep overhead.
 #ifdef __APPLE__
-        const size_t effective_limit = limits.max_memory_bytes + (250*1024*1024);
+        const size_t effective_limit = limits.max_memory_bytes + 250*1024*1024;
 #else
-        const size_t effective_limit = limits.max_memory_bytes + (20*1024*1024); // 20MB slack for libc etc
+        const size_t effective_limit = limits.max_memory_bytes + 20*1024*1024;
 #endif
         while(true){
             pid_t w=waitpid(pid,&status,WNOHANG);
@@ -137,7 +144,7 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
             size_t rss=UnixSandboxImpl::get_child_rss(pid);
             if(rss>0 && rss>effective_limit){ kill(pid,SIGKILL); waitpid(pid,&status,0); return Result<void>::err("Memory limit exceeded - RSS "+std::to_string(rss/1024/1024)+"MB > "+std::to_string(effective_limit/1024/1024)+"MB limit (killed)"); }
             if(std::chrono::steady_clock::now()-start>limits.timeout){ kill(pid,SIGKILL); waitpid(pid,&status,0); return Result<void>::err("Timeout after "+std::to_string(limits.timeout.count())+"ms"); }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
     }
 #endif

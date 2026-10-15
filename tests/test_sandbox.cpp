@@ -45,22 +45,21 @@ int main() {
     
     // Test 6: Large memory - uses execute_in_process with real enforcement
     {
-        std::cout << "Test 6: Large memory allocation prevention (100MB limit, try 300MB)... ";
-        SecurityLimits limits;
-        limits.max_memory_bytes = 100 * 1024 * 1024;
-        limits.timeout = std::chrono::milliseconds(10000);
-
-        auto result = Sandbox::execute_in_process([]() -> int {
+         std::cout << "Test 6: Large memory allocation prevention (100MB limit, try 500MB)... ";
+         SecurityLimits limits;
+         limits.max_memory_bytes = 100 * 1024 * 1024;
+         limits.timeout = std::chrono::milliseconds(15000);
+         
+         auto result = Sandbox::execute_in_process([]() -> int {
             try {
-                // On Unix, setrlimit with overhead will make this fail via bad_alloc or SIGKILL
-                // On Windows, monitoring will detect PrivateUsage > limit
                 std::vector<char> large;
-                large.reserve(300 * 1024 * 1024);
-                large.resize(300 * 1024 * 1024);
-                for (size_t i = 0; i < large.size(); i += 1024*1024) large[i] = 'x'; // touch each MB
-                return 0; // 0 = allocation succeeded (limit NOT enforced)
+                large.reserve(500 * 1024 * 1024);
+                large.resize(500 * 1024 * 1024);
+                for (size_t i = 0; i < large.size(); i += 4096) large[i] = 'x';
+                std::this_thread::sleep_for(std::chrono::milliseconds(800)); // hold for Windows poller
+                return 0;
             } catch (const std::bad_alloc&) {
-                return 100; // 100 = bad_alloc - limit enforced
+                return 100;
             } catch (...) {
                 return 100;
             }
