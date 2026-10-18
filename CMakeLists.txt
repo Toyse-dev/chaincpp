@@ -68,6 +68,7 @@ if(NOT LLAMA_FOUND_LOCAL)
         GIT_SHALLOW TRUE
         GIT_PROGRESS TRUE
     )
+    set(GGML_AMX OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(llama)
 endif()
 
@@ -137,7 +138,7 @@ elseif(TARGET llama)
     target_link_libraries(chaincpp PUBLIC llama)
 endif()
 
-if(WIN32)
+if (WIN32)
     target_link_libraries(chaincpp PRIVATE crypt32 ws2_32 wldap32)
 endif()
 
