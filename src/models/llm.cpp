@@ -170,7 +170,7 @@ security::Result<std::string> OpenAIChat::generate(const std::vector<Message>& m
         last_usage_.total_tokens = last_usage_.prompt_tokens + last_usage_.completion_tokens;
         return security::Result<std::string>::ok(parsed["content"][0]["text"].get<std::string>());
     } catch (...) {
-        return security::Result<std::string>::err("Failed parsing Anthropic response");
+        return security::Result<std::string>::err("Failed parsing OpenAI response");
     }
 }
 
