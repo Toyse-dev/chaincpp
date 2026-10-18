@@ -69,7 +69,7 @@ int main() {
             std::cout << "PASSED (prevented: " << result.error() << ")\n";
             tests_passed++;
         } else {
-            std::cout << "FAILED (300MB succeeded despite 100MB limit)\n";
+            std::cout << "FAILED (500MB succeeded despite 100MB limit)\n";
             tests_failed++;
         }
     }
