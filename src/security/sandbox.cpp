@@ -125,7 +125,7 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
     return Result<void>::ok();
 #else
     pid_t pid=fork(); if(pid==-1) return Result<void>::err("fork() failed");
-    if (pid===0) {
+    if (pid==0) {
         UnixSandboxImpl::set_memory_limit(limits.max_memory_bytes);
         UnixSandboxImpl::set_cpu_limit(limits.timeout);
         UnixSandboxImpl::sanitize_environment();
