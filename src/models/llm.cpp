@@ -487,11 +487,11 @@ security::Result<std::string> LocalLLM::generate(const std::vector<Message>& mes
 
     // Route safely through your verified execute_in_process Sandbox method loop
     auto run_res = impl_->generate(messages, default_config);
-    if (run_res.is_ok() && stream_cb) stream_cb(run_res.value());
-
-    if (run_res.is_err()) return security::Result<std::string>::err(run_res.error());
-    if (!success) return security::Result<std::string>::err(error_msg);
-    return security::Result<std::string>::ok(std::move(result_str));
+    if (run_res.is_ok()) {
+        if (stream_cb) stream_cb(run_res.value());
+        return security::Result<std::string>::ok(run_res.value());
+    }
+    return security::Result<std::string>::err(run_res.error());
 }
 
 security::Result<void> LocalLLM::stream_generate(const std::vector<Message>& messages, StreamCallback on_chunk, const ModelConfig& config) {
