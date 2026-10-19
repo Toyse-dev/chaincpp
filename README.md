@@ -120,7 +120,13 @@ Implemented features in `v0.1.0-alpha`:
 * **TLS configuration:** `CURLOPT_SSL_VERIFYPEER=1`, `CURLOPT_SSL_VERIFYHOST=2`, `CURLSSLOPT_NATIVE_CA` on Windows, `/etc/ssl/certs/ca-certificates.crt` on Linux.
 * **Secrets Handling:** `secure_string` with `VirtualLock`/`mlock` + explicit memory zeroing in the destructor. Secrets are not yet persisted.
 * **Prompt Handling:** `format_safe` validates token placeholders. The injection filter relies on word-boundary matching instead of regex to protect against Regular Expression Denial of Service (ReDoS) vulnerabilities.
-* **Execution Safety:** `execute_safe` wraps tool execution pathways within thread timeouts and structured exception boundaries. OS-level isolation primitives (like Linux seccomp or Windows Job Objects) are on the roadmap but not yet enforced.
+* **Execution Safety:** `execute_safe` wraps tool execution in cooperative timeouts (thread + structured exception boundaries). `execute_in_process` adds OS-level memory enforcement via `fork()` + RSS monitoring.
+
+* **Known Limitations:**
+- **Linux:** Memory limits are enforced via `RLIMIT_AS` + `/proc/[pid]/status` VmRSS polling and `SIGKILL` on breach — fully enforced.
+- **Windows:** Enforced via `PrivateUsage` growth tracking (baseline + limit) in the same process. No `fork()`, so limit is cooperative — large allocations will be detected and reported as `Memory limit exceeded`, but not hardware-isolated.
+- **macOS:** `RLIMIT_AS` / `RLIMIT_RSS` are **not strictly enforced** by the Mach kernel (documented Apple behavior). The sandbox tracks `pti_resident_size` growth and kills on breach as best-effort, but a 500MB allocation against a 100MB limit may succeed. For security-critical workloads on macOS, use higher limits or run untrusted tools in a separate container/process. This is an OS limitation, not a chaincpp bug — see `tests/test_sandbox.cpp` Test 6 SKIPPED case.
+- OS-level isolation (seccomp-bpf on Linux, Job Objects on Windows) is on the roadmap for v0.2.
 
 ---
 
