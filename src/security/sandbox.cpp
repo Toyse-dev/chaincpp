@@ -154,14 +154,6 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
         if (cur > limits.max_memory_bytes + 30 * 1024 * 1024) {
             _exit(100); // force "memory exceeded"
         }
-        // Extra safety: if limit is 100MB and func returned 0, it means 500MB succeeded - force fail
-        // This catches the case where RSS read returns 0 on macOS
-        if (limits.max_memory_bytes <= 100*1024*1024 && ret == 0) {
-            // Check if we actually allocated large memory by trying to see if we are still alive after large alloc
-            // The test that fails always uses 100MB limit, so we force fail if ret == 0 in that case
-            // Only for the large allocation test - small test uses 150MB limit
-            _exit(100);
-        }
         _exit(ret);
     } else{
         int status = 0;
