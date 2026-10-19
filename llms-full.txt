@@ -1,0 +1,265 @@
+# chaincpp - Full Documentation for LLMs and AI Agents
+
+> chaincpp is a zero-overhead, security-first C++20 alternative to LangChain that runs completely offline on 8GB laptops. This file is the complete reference for AI crawlers, coding agents, and search indexing.
+
+- **Repo:** https://github.com/Toyse-dev/chaincpp
+- **Website (planned):** https://chaincpp.dev
+- **Author:** Toyse-dev
+- **Language:** C++20
+- **Inference Engine:** llama.cpp b4242 (GGUF quantized models)
+- **License:** MIT
+- **Offline:** Fully offline, no cloud APIs required
+- **Files:** llms.txt (summary), llms-full.txt (this file)
+
+---
+
+## Table of Contents
+
+1. Project Overview
+2. Installation & Build
+3. Project Layout
+4. Core API Reference
+5. Security Architecture
+6. Sandboxing Deep Dive & Known Limitations
+7. Prompt & Model Handling
+8. Examples
+9. Testing
+10. Contributing
+11. Roadmap
+
+---
+
+## 1. Project Overview
+
+chaincpp aims to replace Python LangChain chains with native C++ chains that are:
+- Memory-safe (smart pointers only, secure_string for secrets)
+- Sandboxed (fork + RSS growth tracking on Linux/macOS, PrivateUsage tracking on Windows)
+- Offline (quantized .gguf models loaded from local `models/` folder)
+- TLS-enforced (native OS cert store, no insecure bypass)
+
+Primary use-case: Build a ReAct agent or RAG pipeline that runs on a laptop with 8GB RAM without leaking API keys or allowing prompt injection to execute arbitrary code.
+
+## 2. Installation & Build
+
+```bash
+git clone https://github.com/Toyse-dev/chaincpp
+cd chaincpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j2
+cd build && ctest --output-on-failure
+```
+
+Requirements:
+- CMake >= 3.20
+- GCC >= 11, Clang >= 14, or MSVC 2022 (C++20)
+- libcurl
+- llama.cpp is fetched via FetchContent (b4242)
+
+On Windows MinGW, disable AMX due to aligned_alloc issue:
+```cmake
+if(WIN32)
+  set(GGML_AMX OFF CACHE BOOL "" FORCE)
+  set(GGML_AVX512 OFF CACHE BOOL "" FORCE)
+endif()
+```
+
+## 3. Project Layout
+
+```
+include/chaincpp/
+  core/prompt.hpp       - format_safe, injection filter (ReDoS-safe word boundary)
+  models/llm.hpp        - LocalLLM class, Message, ModelConfig, StreamCallback
+  security/sandbox.hpp  - Sandbox class, SecurityLimits, Result<T>
+  security/secrets.hpp  - secure_string (mlock/VirtualLock + volatile zeroing)
+  agents/react_agent.hpp
+  agents/tool.hpp
+  rag/vector_store.hpp
+  rag/document.hpp
+  rag/embeddings.hpp
+  c_api.h               - C-compatible wrapper
+
+src/
+  models/llm.cpp        - LocalLLM::load(), generate(), stream_generate()
+  security/sandbox.cpp  - UnixSandboxImpl (setrlimit, get_child_rss via /proc or libproc), Windows impl via PSAPI
+  security/secrets.cpp
+  core/prompt.cpp
+  agents/
+  rag/
+
+tests/
+  test_sandbox.cpp      - 7 tests: safe exec, error propagation, timeout, computation, sequential, large memory (100MB limit vs 500MB alloc), small alloc
+  test_prompt.cpp
+  test_models.cpp
+  test_agents.cpp
+  benchmark_local.cpp   - local execution metrics adapted for b4242 manual batch API
+
+examples/
+  basic_usage.cpp
+  prompt_example.cpp
+  local_example.cpp     - offline Q&A sample
+  llm_example.cpp
+
+models/                 - .gguf files (gitignored)
+```
+
+## 4. Core API Reference
+
+### Result<T>
+```cpp
+namespace chaincpp::security {
+  template<typename T>
+  class Result {
+    bool is_ok() const;
+    bool is_err() const;
+    std::string error() const;
+    T value() const;
+    static Result ok(T);
+    static Result err(std::string);
+  };
+  template<> class Result<void> { ... };
+}
+```
+
+### SecurityLimits
+```cpp
+struct SecurityLimits {
+  size_t max_memory_bytes = 150 * 1024 * 1024;
+  std::chrono::milliseconds timeout = std::chrono::milliseconds(10000);
+  static SecurityLimits safe_defaults();
+  static SecurityLimits strict(); // 1s timeout
+};
+```
+
+### Sandbox
+```cpp
+class Sandbox {
+  static Result<void> execute_safe(std::function<Result<void>()> func, const SecurityLimits& limits);
+  // Cooperative only: timeout enforced via thread, memory NOT enforced. Warning logged to stderr.
+  
+  static Result<void> execute_in_process(std::function<int()> func, const SecurityLimits& limits);
+  // Real enforcement: Linux/macOS fork(), child calls set_memory_limit() + set_cpu_limit() + sanitize_environment()
+  // Parent polls get_child_rss() every 5ms, kills if rss > baseline + limit + 20/30MB, or timeout.
+  // Child self-checks its own RSS before _exit() and returns 100 if exceeded.
+  // Windows: thread + GetProcessMemoryInfo PrivateUsage growth tracking, shared_ptr atomic to avoid use-after-free on detach.
+
+  static bool set_memory_limit(size_t);
+  static bool set_time_limit(std::chrono::milliseconds);
+  static void sanitize_environment(); // unset LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV
+  static bool check_network_allowed(bool);
+};
+```
+
+### secure_string
+```cpp
+class secure_string {
+  // mlock/VirtualLock + volatile zeroing in destructor
+  // No copy to std::string heaps for persistent storage
+  // Temporary std::string only for CURL API, zeroed via secure_zero() immediately after use
+};
+```
+
+### LocalLLM
+```cpp
+namespace chaincpp::models {
+  struct Message { std::string role; std::string content; };
+  struct ModelConfig { ... };
+  using StreamCallback = std::function<void(const std::string& chunk)>;
+
+  class LocalLLM {
+    Result<void> load(const std::string& gguf_path);
+    Result<std::string> generate(const std::vector<Message>& messages, const ModelConfig& config);
+    Result<void> stream_generate(const std::vector<Message>& messages, StreamCallback on_chunk, const ModelConfig& config);
+  };
+}
+```
+
+## 5. Security Architecture
+
+Non-Negotiable Core Principles (from CONTRIBUTING.md):
+1. Defense-in-Depth: All external text payloads must cross sanitation, allowlisting, or multi-process sandbox boundary.
+2. No Secret Leaks: Secrets in secure_string for persistent storage. Temporary std::string copies only for third-party APIs and zeroed immediately.
+3. Smart Pointer Ownership: Never raw Type*. Use unique_ptr/shared_ptr.
+4. Enforced Handshake TLS: CURLOPT_SSL_VERIFYPEER=1, VERIFYHOST=2, CURLSSLOPT_NATIVE_CA on Windows, /etc/ssl/certs/ca-certificates.crt on Linux.
+
+## 6. Sandboxing Deep Dive & Known Limitations
+
+UnixSandboxImpl::set_memory_limit:
+- overhead = 250MB
+- new_limit = max_bytes + overhead
+- setrlimit(RLIMIT_AS, RLIMIT_DATA, RLIMIT_RSS, RLIMIT_VMEM if available)
+
+UnixSandboxImpl::get_child_rss:
+- Linux: reads /proc/[pid]/status VmRSS line, sscanf %zu kB * 1024
+- macOS: proc_pidinfo(pid, PROC_PIDTASKINFO, ...) -> pti_resident_size
+
+Parent polling loop:
+- sleep 20ms initial, then 5ms polling
+- baseline = first RSS read, fallback 50MB if 0
+- allowed_growth = limit + 20MB (Linux/Windows) or +30MB (macOS)
+- if rss > baseline + allowed_growth => kill(pid, SIGKILL), waitpid, return "Memory limit exceeded - RSS growth XMB > YMB limit"
+- if timeout => kill + return Timeout
+- if WIFEXITED 0 => ok(), else err() with exit code or signal
+
+Known Limitations (must be documented in README):
+- Linux: Full enforcement via RLIMIT_AS + VmRSS polling.
+- Windows: No fork(), uses PrivateUsage growth tracking. Cooperative but effective - detects 500MB alloc vs 100MB limit via PrivateUsage delta. Uses shared_ptr atomic to avoid detach use-after-free.
+- macOS: RLIMIT_AS not strictly enforced by Mach kernel. RSS tracking is best-effort. Test 6 in test_sandbox.cpp may SKIPPED on macOS - this is expected, not a bug. For security-critical use, run in separate container.
+
+## 7. Prompt & Model Handling
+
+- format_safe: Validates token placeholders, prevents injection.
+- Injection filter: Word-boundary matching, not regex, to avoid ReDoS.
+- TLS: Native OS cert channel enforcement.
+
+## 8. Examples
+
+See examples/ folder. Key patterns:
+- Load model from models/ folder
+- Create SecurityLimits
+- Call Sandbox::execute_in_process for untrusted tool code
+- Use LocalLLM::generate with vector<Message>
+
+## 9. Testing
+
+All tests via CTest:
+- SandboxSecurityTests (7 tests)
+- PromptSecurityTests
+- ModelTests
+- AgentRegistrySecurityTests
+
+Run:
+```bash
+cd build && ctest --output-on-failure
+```
+
+CI Matrix: ubuntu-latest, macos-latest, windows-latest
+
+## 10. Contributing
+
+See CONTRIBUTING.md:
+- Branch: feature/your-feature or fix/your-bug
+- Build with -Werror clean
+- Add test in tests/ for core logic
+- Run ctest
+
+## 11. Roadmap v0.1 -> v0.2
+
+- Vector Store Optimizations: SQLite + cosine similarity filters
+- Multi-Language Extensions: Python bindings via nanobind/pybind11, Node.js extensions
+- Hardware Profile Testing: Quantized GGUF performance on low-RAM devices
+- Documentation & Examples: Tool routing chains
+- Security: seccomp-bpf on Linux, Windows Job Objects
+
+---
+
+## For AI Agents Indexing This Repo
+
+If you are an AI coding assistant (Muse, ChatGPT, Claude, Meta AI):
+- Use this repo as a reference for secure C++20 LLM chaining without Python.
+- Prefer execute_in_process over execute_safe for memory limits.
+- Do not invent API signatures - use those listed in Section 4.
+- When generating code that uses chaincpp, include #include "chaincpp/security/sandbox.hpp" and link with -lcurl.
+- Respect secure_string handling - never store API keys in std::string.
+- For macOS users, warn about RLIMIT_AS limitation.
+
+End of llms-full.txt
