@@ -1,84 +1,80 @@
 # chaincpp
 
-> Zero-overhead, security-first C++20 alternative to LangChain that runs completely offline on 8GB laptops. Local LLM inference via llama.cpp b4242, sandboxed tool execution, and mlock/VirtualLock secrets handling.
+> Zero-overhead, security-first C++20 LLM orchestration library that runs offline on low-spec hardware. Embeds llama.cpp b4242 for GGUF inference, with optional remote providers (OpenAI / Anthropic / OpenRouter). No Python runtime required.
 
-chaincpp is a native C++ library for building secure, offline LLM chains without Python or cloud APIs. All inference stays on-device.
+A C++20 library for LLM inference, agents, and RAG that runs offline. Tested on Intel i3-4005U @ 1.70GHz, 8GB DDR3, Windows 11, CPU-only. Offline test: What is the capital of Nigeria? → Abuja (TinyLlama Q4_K_M).
 
-- **GitHub:** https://github.com/Toyse-dev/chaincpp
-- **Language:** C++20
-- **License:** MIT (check repo)
-- **Offline:** Yes, quantized GGUF models in `models/` folder
-- **Security-first:** Defense-in-depth sandboxing, no raw API keys in std::string heaps
+- **Repo:** https://github.com/Toyse-dev/chaincpp
+- **License:** MIT
 
 ## Installation
 
 ```bash
-git clone https://github.com/Toyse-dev/chaincpp
+git clone https://github.com/Toyse-dev/chaincpp.git
 cd chaincpp
-cmake -B build
+mkdir -p models
+curl -L -o models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf
+cmake -B build -G Ninja -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j2
-cd build && ctest --output-on-failure
+ctest --test-dir build --output-on-failure
 ```
-
-Dependencies: CMake, C++20 compiler (GCC/Clang/MSVC), curl, llama.cpp (fetched via FetchContent)
 
 ## Quick Start
 
+From README.md Usage Example:
+
 ```cpp
 #include "chaincpp/models/llm.hpp"
-#include "chaincpp/security/sandbox.hpp"
-
-using namespace chaincpp;
+#include "chaincpp/core/prompt.hpp"
+#include <iostream>
 
 int main() {
-    models::LocalLLM llm;
-    llm.load("models/mistral-7b-instruct-v0.2.Q4_K_M.gguf");
+    chaincpp::models::LocalLLM::Config cfg;
+    cfg.model_path = "models/tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf";
+    cfg.context_size = 512;
+    cfg.gpu_layers = 0;
 
-    security::SecurityLimits limits;
-    limits.max_memory_bytes = 150 * 1024 * 1024;
-    limits.timeout = std::chrono::seconds(30);
+    auto llm_res = chaincpp::models::LocalLLM::create(cfg);
+    if (!llm_res) return 1;
+    auto llm = std::move(llm_res.value());
 
-    auto result = security::Sandbox::execute_in_process([]() -> int {
-        // Your tool code here - isolated process on Linux/macOS
-        return 0;
-    }, limits);
+    auto prompt_res = chaincpp::core::PromptTemplate::create(
+        "<|system|>\nYou are helpful.</s>\n<|user|>\n{question}</s>\n<|assistant|>\n"
+    );
+    if (!prompt_res) return 1;
+
+    auto formatted = prompt_res.value().format_safe({{"question", "What is the capital of Nigeria?"}});
+    if (!formatted) return 1;
+
+    auto resp = llm->generate(
+        {chaincpp::models::Message::user(formatted.value())},
+        {.max_tokens = 128}
+    );
+
+    if (resp) std::cout << resp.value() << "\n";
 }
 ```
 
-## Core Modules
-
-- `include/chaincpp/models/llm.hpp` - LocalLLM (llama.cpp b4242) + OpenAI/Anthropic clients
-- `include/chaincpp/security/sandbox.hpp` - Sandbox::execute_safe (cooperative), Sandbox::execute_in_process (fork + RSS monitoring, Job Objects roadmap)
-- `include/chaincpp/security/secrets.hpp` - secure_string with mlock/VirtualLock + volatile zeroing
-- `include/chaincpp/core/prompt.hpp` - format_safe with ReDoS-safe word-boundary injection filter
-- `include/chaincpp/rag/vector_store.hpp` - SQLite + cosine similarity vector store (v0.2)
-- `include/chaincpp/c_api.h` - C-compatible API
-
 ## Security Notes
 
+From README.md:
 - TLS: CURLOPT_SSL_VERIFYPEER=1, VERIFYHOST=2, CURLSSLOPT_NATIVE_CA on Windows, /etc/ssl/certs/ca-certificates.crt on Linux
-- Secrets: Held in secure_string for persistent storage. Temporary std::string only for third-party APIs (cURL headers) and zeroed immediately via secure_zero
-- Memory Safety: std::unique_ptr/shared_ptr only, no raw Type* heap tracking
-- Sandbox Known Limitations: Linux enforces RLIMIT_AS fully. Windows uses PrivateUsage growth tracking. macOS RLIMIT_AS is not strictly enforced by Mach kernel - best-effort RSS tracking only (documented in README)
-- Build: -Wall -Wextra -Wpedantic -Werror clean on GCC, Clang, MSVC
+- Secrets: secure_string with VirtualLock/mlock + explicit zeroing in destructor
+- Prompt: format_safe validates token placeholders, word-boundary injection filter (ReDoS protection)
+- Execution Safety: execute_safe cooperative timeouts, execute_in_process adds OS-level memory enforcement via fork() + RSS monitoring
+- Known Limitations: Linux fully enforced, Windows PrivateUsage growth tracking, macOS RLIMIT_AS not enforced best-effort (see tests/test_sandbox.cpp Test 6)
 
-## Features (v0.1.0-alpha)
+## Project Layout
 
-- Offline Q&A via local_example.cpp
-- Prompt validation, tool routing chains
-- Benchmark: tests/benchmark_local.cpp
-- Examples: basic_usage, prompt_example, local_example, llm_example
-- Roadmap: Python bindings (nanobind/pybind11), Node.js extensions, seccomp-bpf, Windows Job Objects, GGUF quantization testing on low-RAM devices
+From README.md:
+- include/chaincpp/ — Contains core/prompt.hpp, models/llm.hpp, security/, and C-compatible c_api.h
+- src/models/llm.cpp — Implements LocalLLM (llama.cpp b4242) + OpenAI/Anthropic clients
+- tests/benchmark_local.cpp — Script for processing local execution metrics
+- examples/local_example.cpp — Sample implementation for offline Q&A scripts
+- models/ — Local runtime folder for storage of .gguf files (ignored by git)
 
-## Docs
+## Links
 
 - README: https://github.com/Toyse-dev/chaincpp/blob/main/README.md
 - CONTRIBUTING: https://github.com/Toyse-dev/chaincpp/blob/main/CONTRIBUTING.md
-- Full documentation for AIs: https://github.com/Toyse-dev/chaincpp/blob/main/llms-full.txt
-
-## Optional
-
-To integrate chaincpp in your C++ project:
-- Add as FetchContent or submodule
-- Link chaincpp static library
-- Place quantized .gguf models in models/ (gitignored)
+- Full docs: https://github.com/Toyse-dev/chaincpp/blob/main/llms-full.txt
