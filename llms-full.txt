@@ -1,4 +1,4 @@
-# chaincpp — C++20 LLM orchestration library
+# chaincpp — C++20 LLM orchestration library alternative to Python's LangChain
 
 A C++20 library for LLM inference, agents, and RAG that runs offline on low-spec hardware. Embeds llama.cpp (b4242) for GGUF inference, with optional remote providers (OpenAI / Anthropic / OpenRouter). No Python runtime required.
 

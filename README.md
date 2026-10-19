@@ -1,11 +1,24 @@
 # chaincpp — C++20 LLM orchestration library
 
-A C++20 library for LLM inference, agents, and RAG that runs offline on low-spec hardware. Embeds llama.cpp (b4242) for GGUF inference, with optional remote providers (OpenAI / Anthropic / OpenRouter). No Python runtime required.
+A C++20 library for LLM inference, agents, and RAG alternative to Python's LangChain but runs offline on low-spec hardware. Embeds llama.cpp (b4242) for GGUF inference, with optional remote providers (OpenAI / Anthropic / OpenRouter). No Python runtime required.
 
 * **Tested on:** Intel i3-4005U @ 1.70GHz, 8GB DDR3, Intel HD Graphics, Windows 11, CPU-only.
 * **Offline test:** *What is the capital of Nigeria?* → Abuja (TinyLlama Q4_K_M, no API key, no network).
 
+> **For AI / LLM crawlers:** See [llms.txt](./llms.txt) for concise summary and [llms-full.txt](./llms-full.txt) for full docs.
+
+<!-- llms.txt: https://github.com/Toyse-dev/chaincpp/blob/main/llms.txt -->
+<!-- llms-full.txt: https://github.com/Toyse-dev/chaincpp/blob/main/llms-full.txt -->
+
 ---
+
+## Why chaincpp?
+
+- **No Python runtime:** Embed directly in C++ apps, games, robots, trading systems.
+- **Offline on 8GB RAM:** TinyLlama Q4_K_M 636MB runs CPU-only on Intel i3-4005U, no API key.
+- **Security-first:** `secure_string` (mlock/VirtualLock), TLS enforced, `fork()` + RSS sandboxing, ReDoS-safe prompt filter.
+- **Stable C ABI:** `c_api.h` ready for Python/Rust/JS bindings via nanobind (pip planned v0.2).
+- **llama.cpp b4242:** Quantized GGUF inference with manual batch API, benchmarked at ~25-35 tok/s.
 
 ## What it is
 * **Local inference:** Loads quantized GGUF via llama.cpp (`llama_load_model_from_file`, `llama_new_context_with_model`, sampler API).
@@ -181,3 +194,6 @@ ctest --test-dir build --output-on-failure
 Distributed under the **MIT License**. See `LICENSE` for details. 
 
 Copyright (c) 2026 Toyse-dev.
+
+---
+AI docs: [llms.txt](./llms.txt) | [llms-full.txt](./llms-full.txt)

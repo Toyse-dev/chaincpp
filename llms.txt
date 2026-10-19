@@ -2,7 +2,7 @@
 
 > Zero-overhead, security-first C++20 LLM orchestration library that runs offline on low-spec hardware. Embeds llama.cpp b4242 for GGUF inference, with optional remote providers (OpenAI / Anthropic / OpenRouter). No Python runtime required.
 
-A C++20 library for LLM inference, agents, and RAG that runs offline. Tested on Intel i3-4005U @ 1.70GHz, 8GB DDR3, Windows 11, CPU-only. Offline test: What is the capital of Nigeria? → Abuja (TinyLlama Q4_K_M).
+A C++20 library for LLM inference, agents, and RAG alternative to Python's LangChain but runs offline. Tested on Intel i3-4005U @ 1.70GHz, 8GB DDR3, Windows 11, CPU-only. Offline test: What is the capital of Nigeria? → Abuja (TinyLlama Q4_K_M).
 
 - **Repo:** https://github.com/Toyse-dev/chaincpp
 - **License:** MIT
