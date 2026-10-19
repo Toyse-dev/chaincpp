@@ -1,0 +1,84 @@
+# chaincpp
+
+> Zero-overhead, security-first C++20 alternative to LangChain that runs completely offline on 8GB laptops. Local LLM inference via llama.cpp b4242, sandboxed tool execution, and mlock/VirtualLock secrets handling.
+
+chaincpp is a native C++ library for building secure, offline LLM chains without Python or cloud APIs. All inference stays on-device.
+
+- **GitHub:** https://github.com/Toyse-dev/chaincpp
+- **Language:** C++20
+- **License:** MIT (check repo)
+- **Offline:** Yes, quantized GGUF models in `models/` folder
+- **Security-first:** Defense-in-depth sandboxing, no raw API keys in std::string heaps
+
+## Installation
+
+```bash
+git clone https://github.com/Toyse-dev/chaincpp
+cd chaincpp
+cmake -B build
+cmake --build build -j2
+cd build && ctest --output-on-failure
+```
+
+Dependencies: CMake, C++20 compiler (GCC/Clang/MSVC), curl, llama.cpp (fetched via FetchContent)
+
+## Quick Start
+
+```cpp
+#include "chaincpp/models/llm.hpp"
+#include "chaincpp/security/sandbox.hpp"
+
+using namespace chaincpp;
+
+int main() {
+    models::LocalLLM llm;
+    llm.load("models/mistral-7b-instruct-v0.2.Q4_K_M.gguf");
+
+    security::SecurityLimits limits;
+    limits.max_memory_bytes = 150 * 1024 * 1024;
+    limits.timeout = std::chrono::seconds(30);
+
+    auto result = security::Sandbox::execute_in_process([]() -> int {
+        // Your tool code here - isolated process on Linux/macOS
+        return 0;
+    }, limits);
+}
+```
+
+## Core Modules
+
+- `include/chaincpp/models/llm.hpp` - LocalLLM (llama.cpp b4242) + OpenAI/Anthropic clients
+- `include/chaincpp/security/sandbox.hpp` - Sandbox::execute_safe (cooperative), Sandbox::execute_in_process (fork + RSS monitoring, Job Objects roadmap)
+- `include/chaincpp/security/secrets.hpp` - secure_string with mlock/VirtualLock + volatile zeroing
+- `include/chaincpp/core/prompt.hpp` - format_safe with ReDoS-safe word-boundary injection filter
+- `include/chaincpp/rag/vector_store.hpp` - SQLite + cosine similarity vector store (v0.2)
+- `include/chaincpp/c_api.h` - C-compatible API
+
+## Security Notes
+
+- TLS: CURLOPT_SSL_VERIFYPEER=1, VERIFYHOST=2, CURLSSLOPT_NATIVE_CA on Windows, /etc/ssl/certs/ca-certificates.crt on Linux
+- Secrets: Held in secure_string for persistent storage. Temporary std::string only for third-party APIs (cURL headers) and zeroed immediately via secure_zero
+- Memory Safety: std::unique_ptr/shared_ptr only, no raw Type* heap tracking
+- Sandbox Known Limitations: Linux enforces RLIMIT_AS fully. Windows uses PrivateUsage growth tracking. macOS RLIMIT_AS is not strictly enforced by Mach kernel - best-effort RSS tracking only (documented in README)
+- Build: -Wall -Wextra -Wpedantic -Werror clean on GCC, Clang, MSVC
+
+## Features (v0.1.0-alpha)
+
+- Offline Q&A via local_example.cpp
+- Prompt validation, tool routing chains
+- Benchmark: tests/benchmark_local.cpp
+- Examples: basic_usage, prompt_example, local_example, llm_example
+- Roadmap: Python bindings (nanobind/pybind11), Node.js extensions, seccomp-bpf, Windows Job Objects, GGUF quantization testing on low-RAM devices
+
+## Docs
+
+- README: https://github.com/Toyse-dev/chaincpp/blob/main/README.md
+- CONTRIBUTING: https://github.com/Toyse-dev/chaincpp/blob/main/CONTRIBUTING.md
+- Full documentation for AIs: https://github.com/Toyse-dev/chaincpp/blob/main/llms-full.txt
+
+## Optional
+
+To integrate chaincpp in your C++ project:
+- Add as FetchContent or submodule
+- Link chaincpp static library
+- Place quantized .gguf models in models/ (gitignored)
