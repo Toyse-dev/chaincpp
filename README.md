@@ -1,5 +1,7 @@
 # chaincpp — C++20 LLM orchestration library
 
+**Official Website:** [https://toyse-dev.github.io/chaincpp-website/](https://toyse-dev.github.io/chaincpp-website/) 
+
 A C++20 library for LLM inference, agents, and RAG alternative to Python's LangChain but runs offline on low-spec hardware. Embeds llama.cpp (b4242) for GGUF inference, with optional remote providers (OpenAI / Anthropic / OpenRouter). No Python runtime required.
 
 * **Tested on:** Intel i3-4005U @ 1.70GHz, 8GB DDR3, Intel HD Graphics, Windows 11, CPU-only.
@@ -186,6 +188,14 @@ ctest --test-dir build --output-on-failure
 * [ ] DPAPI / libsecret persistent context storage structures (Target: `v0.2`)
 * [ ] Python deployment pathways via native nanobind configurations (`pip install chaincpp`) (Target: `v0.2`)
 * [ ] Native sandbox boundaries (Linux `fork()` + `RLIMIT` + `seccomp` / Windows Job Object processing caps)
+
+---
+
+## Links
+
+- [Official Website](https://toyse-dev.github.io/chaincpp-website/)
+- [AI Documentation (llms.txt)](https://toyse-dev.github.io/chaincpp-website/llms.txt)
+- [Discussions & Issues](https://github.com/Toyse-dev/chaincpp/issues)
 
 ---
 
