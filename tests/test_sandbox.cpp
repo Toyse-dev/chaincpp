@@ -3,6 +3,7 @@
 #include <vector>
 #include <chrono>
 #include <thread>
+#include <cstdlib>
 
 using namespace chaincpp::security;
 
@@ -45,62 +46,88 @@ int main() {
     
     // Test 6: Large memory - uses execute_in_process with real enforcement
     {
-         std::cout << "Test 6: Large memory allocation prevention (100MB limit, try 500MB)... ";
-         SecurityLimits limits;
-         limits.max_memory_bytes = 100 * 1024 * 1024;
-         limits.timeout = std::chrono::milliseconds(15000);
-         
-         auto result = Sandbox::execute_in_process([]() -> int {
-            try {
-                std::vector<char> large;
-                large.reserve(500 * 1024 * 1024);
-                large.resize(500 * 1024 * 1024);
-                for (size_t i = 0; i < large.size(); i += 4096) large[i] = 'x';
-                std::this_thread::sleep_for(std::chrono::milliseconds(800)); // hold for Windows poller
-                return 0;
-            } catch (const std::bad_alloc&) {
-                return 100;
-            } catch (...) {
-                return 100;
-            }
-        }, limits);
-
-        #ifdef __APPLE__
-            // macOS does not enforce RLIMIT_AS strictly - known OS limitation
-            if (result.is_err()) {
-                std::cout << "PASSED (prevented: " << result.error() << ")\n";
-            } else {
-                std::cout << "SKIPPED (macOS RLIMIT_AS not enforced - known limitation)\n";
-            }
+     std::cout << "Test 6: Large memory allocation prevention (100MB limit, try 500MB)... " << std::flush;
+     SecurityLimits limits;
+     limits.max_memory_bytes = 100 * 1024 * 1024;
+     limits.timeout = std::chrono::milliseconds(15000);
+     auto result = Sandbox::execute_in_process([]() -> int {
+        try {
+            std::vector<char> large;
+            large.reserve(500 * 1024 * 1024);
+            large.resize(500 * 1024 * 1024);
+            for (size_t i = 0; i < large.size(); i += 4096) large[i] = 'x';
+            std::this_thread::sleep_for(std::chrono::milliseconds(800));
+            return 0;
+        } catch (const std::bad_alloc&) {
+            return 100;
+        } catch (...) {
+            return 100;
+        }
+    }, limits);
+    #ifdef __APPLE__
+        if (result.is_err()) {
+            std::cout << "PASSED (prevented: " << result.error() << ")\n";
+        } else {
+            std::cout << "SKIPPED (macOS RLIMIT_AS not enforced - known limitation)\n";
+        }
+        tests_passed++;
+    #else
+        if (result.is_err()) {
+            std::cout << "PASSED (prevented: " << result.error() << ")\n";
             tests_passed++;
-        #else
+        } else {
+            std::cout << "FAILED (500MB succeded despite 100MB limit)\n";
+            tests_failed++;
+        }
+    #endif
+}
+
+// Test 6b: Small allocation - should succeed
+{
+    std::cout << "Test 6b: Small allocation within limit (150MB limit, 5MB alloc)... " << std::flush;
+    SecurityLimits limits = SecurityLimits::safe_defaults();
+    limits.max_memory_bytes = 150 * 1024 * 1024;
+    limits.timeout = std::chrono::milliseconds(10000);
+    auto result = Sandbox::execute_in_process([]() -> int {
+        try {
+            std::vector<char> small(5 * 1024 * 1024, 'x');
+            small[0] = 'y';
+            return 0;
+        } catch (...) { return 1; }
+    }, limits);
+    if (result.is_ok()) { std::cout << "PASSED\n"; tests_passed++; }
+    else { std::cout << "FAILED: " << result.error() << "\n"; tests_failed++; }
+}
+
+// Test 6c: Subprocess / child process memory leak (Linux cgroup fix)
+    {
+        std::cout << "Test 6c: Child process memory (100MB limit, child tries 500MB)... " << std::flush;
+        #ifdef __linux__
+            SecurityLimits limits;
+            limits.max_memory_bytes = 100 * 1024 * 1024;
+            limits.timeout = std::chrono::milliseconds(15000);
+            
+            auto result = Sandbox::execute_in_process([]() -> int {
+                int rc = std::system(
+                    "python3 -c \"a = bytearray(500*1024*1024); "
+                    "a[::4096] = b'x' * (len(a)//4096); "
+                    "import time; time.sleep(2)\" 2>/dev/null"
+                );
+                return (rc == 0) ? 0 : 1;
+            }, limits);
+
             if (result.is_err()) {
-                std::cout << "PASSED (prevented: " << result.error() << ")\n";
+                std::cout << "PASSED (child killed: " << result.error() << ")\n";
                 tests_passed++;
             } else {
-                std::cout << "FAILED (500MB succeded despite 100MB limit)\n";
+                std::cout << "FAILED (child 500MB succeeded despite 100MB limit)\n";
                 tests_failed++;
             }
+        #else
+            // Windows + macOS have no cgroups - this fix is Linux-only
+            std::cout << "SKIPPED (Linux cgroup test only)\n";
+            tests_passed++;
         #endif
-    }
-
-    // Test 6b: Small allocation - should succeed
-    {
-        std::cout << "Test 6b: Small allocation within limit (150MB limit, 5MB alloc)... ";
-        SecurityLimits limits = SecurityLimits::safe_defaults();
-        limits.max_memory_bytes = 150 * 1024 * 1024;
-        limits.timeout = std::chrono::milliseconds(10000);
-
-        auto result = Sandbox::execute_in_process([]() -> int {
-            try {
-                std::vector<char> small(5 * 1024 * 1024, 'x');
-                small[0] = 'y';
-                return 0;
-            } catch (...) { return 1; }
-        }, limits);
-        
-        if (result.is_ok()) { std::cout << "PASSED\n"; tests_passed++; }
-        else { std::cout << "FAILED: " << result.error() << "\n"; tests_failed++; }
     }
     
     std::cout << "\n========================================\n";
