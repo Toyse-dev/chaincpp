@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <mutex>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -18,6 +19,11 @@
     #include <sys/resource.h>
     #include <unistd.h>
     #include <signal.h>
+    #if defined(__linux__) && !defined(__APPLE__)
+        #include <sys/stat.h>
+        #include <filesystem>
+    #endif
+
     #ifdef __APPLE__
         #include <libproc.h>
         #include <sys/proc_info.h>
@@ -69,41 +75,146 @@ public:
         return 0;
     }
 #endif
+
+#if defined(__linux__) && !defined(__APPLE__)
+    struct CgroupGuard {
+        std::string path;
+        bool active = false;
+
+        bool try_create(size_t limit_bytes) {
+        // Try to create a cgroup under current cgroup or root
+        // We must be in a writable cgroup. This will fail without root if not delegated - that's OK.
+        std::string base = "/sys/fs/cgroup";
+        // if we are in systemd scope, we can't write to root, try to create child
+        path = base + "/chaincpp_" + std::to_string(getpid()) + "_" + std::to_string(rand());
+        if (mkdir(path.c_str(), 0755) != 0) return false;
+        // Enable memory controller if needed (cgroup v2)
+        {
+            std::ofstream f(path + "/memory.max");
+            if (!f) { rmdir(path.c_str()); return false; }
+            // Give 20MB extra for your overhead logic
+            f << std::to_string(limit_bytes + 20 * 1024 * 1024);
+        }
+        // Disable swap to prevent child eating swap
+        {
+            std::ofstream f(path + "/memory.swap.max");
+            if (f) f << "0";
+        }
+        // Prevent OOM killer from taking host down
+        {
+            std::ofstream f(path + "/memory.oom.group");
+            if (f) f << "1";
+        }
+        active = true;
+        return true;
+    }
+    bool add_pid(pid_t pid) {
+        if (!active) return false;
+        std::ofstream f(path + "/cgroup.procs");
+        if (!f) return false;
+        f << pid;
+        return f.good();
+    }
+    size_t current_usage() {
+        if (!active) return 0;
+        std::ifstream f(path + "/memory.current");
+        size_t v = 0;
+        if (f) f >> v;
+        return v;
+    }
+    void kill_all() {
+        if (!active) return;
+        // cgroup v2 way to kill all: cgroup.kill
+        {
+            std::ofstream f(path + "/cgroup.kill");
+            if (f) { f << "1"; return; }
+        }
+        // Fallback: kill pids in cgroup.procs
+        std::ifstream procs(path + "/cgroup.procs");
+        pid_t p;
+        while (procs >> p) { kill(p, SIGKILL); }
+    }
+    void cleanup() {
+        if (!active) return;
+        kill_all();
+        // Move ourselves out before rmdir if we accidentally added parent
+        // Just rmdir - kernel will fail if not empty, which is fine
+        rmdir(path.c_str());
+        active = false;
+    }
+    ~CgroupGuard() { cleanup(); }
+    };
+#endif
 };
 #endif
+
 Sandbox::~Sandbox() = default;
-bool Sandbox::set_memory_limit(size_t m){ (void)m;
-#ifndef _WIN32
- return UnixSandboxImpl::set_memory_limit(m);
-#else
- return true;
+bool Sandbox::set_memory_limit(size_t m) { 
+    (void) m;
+    #ifndef _WIN32
+        return UnixSandboxImpl::set_memory_limit(m);
+    #else
+    return true;
 #endif
 }
-bool Sandbox::set_time_limit(std::chrono::milliseconds t){ (void)t;
-#ifndef _WIN32
- return UnixSandboxImpl::set_cpu_limit(t);
-#else
- return true;
-#endif
+
+bool Sandbox::set_time_limit(std::chrono::milliseconds t) {
+    (void) t;
+    #ifndef _WIN32
+        return UnixSandboxImpl::set_cpu_limit(t);
+    #else
+        return true;
+    #endif
 }
+
 void Sandbox::sanitize_environment(){
-#ifndef _WIN32
- UnixSandboxImpl::sanitize_environment();
-#endif
+    #ifndef _WIN32
+        UnixSandboxImpl::sanitize_environment();
+    #endif
 }
+
 bool Sandbox::check_network_allowed(bool a){return a;}
 Result<void> Sandbox::execute_safe(std::function<Result<void>()> func, const SecurityLimits& limits){
     std::cerr<<"[SECURITY WARNING] Sandbox::execute_safe is cooperative only (timeout enforced, memory NOT enforced - use execute_in_process for memory)\n";
-    std::atomic<bool> completed{false}, timed_out{false};
-    std::string error_msg;
-    Result<void> func_result = Result<void>::ok();
-    std::thread worker([&](){ auto r=func(); if(!timed_out.load()){ if(r.is_err()) error_msg=r.error(); else func_result=std::move(r); completed=true; } });
-    auto start=std::chrono::steady_clock::now();
-    while(!completed.load()){ if(std::chrono::steady_clock::now()-start>limits.timeout){timed_out=true; break;} std::this_thread::sleep_for(std::chrono::milliseconds(10));}
-    if(timed_out.load()){worker.detach(); return Result<void>::err("Execution timeout exceeded (COOPERATIVE ONLY)");}
+
+    struct State {
+        std::atomic<bool> completed{false};
+        std::atomic<bool> timed_out{false};
+        std::string error_msg;
+        std::mutex mutex;
+        Result<void> func_result = Result<void>::ok();
+    };
+    auto state = std::make_shared<State>();
+
+    std::thread worker([func, state](){
+        auto r = func();
+        if(!state->timed_out.load()){
+            std::lock_guard<std::mutex> lock(state->mutex);
+            if(r.is_err()) state->error_msg = r.error();
+            else state->func_result = std::move(r);
+            state->completed = true;
+        }
+    });
+
+    auto start = std::chrono::steady_clock::now();
+    while(!state->completed.load()){
+        if(std::chrono::steady_clock::now() - start > limits.timeout){
+            state->timed_out = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+     if(state->timed_out.load()){
+        // Safe to detach now: worker only touches shared_ptr state
+        worker.detach();
+        return Result<void>::err("Execution timeout exceeded (COOPERATIVE ONLY)");
+    }
     if(worker.joinable()) worker.join();
-    if(!error_msg.empty()) return Result<void>::err(error_msg);
-    return func_result.is_ok()?Result<void>::ok():Result<void>::err("Function failed");
+
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if(!state->error_msg.empty()) return Result<void>::err(state->error_msg);
+    return state->func_result.is_ok() ? Result<void>::ok() : Result<void>::err("Function failed");
 }
 Result<void> Sandbox::execute_in_process(std::function<int()> func, const SecurityLimits& limits){
 #ifdef _WIN32
@@ -155,9 +266,26 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
             _exit(100); // force "memory exceeded"
         }
         _exit(ret);
-    } else{
+        } else{
         int status = 0;
         auto start = std::chrono::steady_clock::now();
+
+#if defined(__linux__) && !defined(__APPLE__)
+        UnixSandboxImpl::CgroupGuard cg;
+        bool use_cgroup = cg.try_create(limits.max_memory_bytes);
+        if (use_cgroup) {
+            if (!cg.add_pid(pid)) {
+                std::cerr << "[SANDBOX WARNING] cgroup created but failed to add child pid " << pid 
+                          << " - falling back to VmRSS polling, child processes not fully isolated\n";
+                use_cgroup = false;
+                cg.cleanup();
+            }
+        } else {
+            std::cerr << "[SANDBOX WARNING] Failed to create cgroup at " << cg.path 
+                      << " (needs root/delegation) - falling back to VmRSS polling\n";
+        }
+#endif
+
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         size_t baseline = UnixSandboxImpl::get_child_rss(pid);
         if(baseline == 0) baseline = 50 * 1024 * 1024;
@@ -170,18 +298,42 @@ Result<void> Sandbox::execute_in_process(std::function<int()> func, const Securi
         while(true){
             pid_t w = waitpid(pid, &status, WNOHANG);
             if(w == pid){
+#if defined(__linux__) && !defined(__APPLE__)
+                if (use_cgroup) cg.cleanup();
+#endif
                 if(WIFEXITED(status) && WEXITSTATUS(status) == 0) return Result<void>::ok();
                 if(WIFEXITED(status)) return Result<void>::err("Memory limit exceeded - child exited "+std::to_string(WEXITSTATUS(status)));
                 if(WIFSIGNALED(status)) return Result<void>::err("Memory limit exceeded - killed by signal "+std::to_string(WTERMSIG(status)));
                 return Result<void>::err("Sandboxed process failed");
             }
+
+#if defined(__linux__) && !defined(__APPLE__)
+            if (use_cgroup) {
+                size_t usage = cg.current_usage();
+                if (usage > peak) peak = usage;
+                // cgroup memory includes all children, so this is the real fix
+                if (usage > limits.max_memory_bytes + 20 * 1024 * 1024) {
+                    cg.kill_all();
+                    kill(pid, SIGKILL);
+                    waitpid(pid, &status, 0);
+                    cg.cleanup();
+                    return Result<void>::err("Memory limit exceeded - cgroup usage " + std::to_string(usage / 1024 / 1024) + "MB > " + std::to_string(limits.max_memory_bytes / 1024 / 1024) + "MB limit (entire tree killed)");
+                }
+            } else {
+#endif
             size_t rss=UnixSandboxImpl::get_child_rss(pid);
             if(rss>peak) peak=rss;
             if(rss>0 && rss > baseline + allowed_growth){
                 kill(pid,SIGKILL); waitpid(pid,&status,0);
                 return Result<void>::err("Memory limit exceeded - RSS growth " + std::to_string((rss-baseline) / 1024 / 1024) + "MB (from " + std::to_string(baseline / 1024 / 1024) + " to " + std::to_string(rss / 1024 / 1024) + ") > " + std::to_string(limits.max_memory_bytes / 1024 / 1024) + "MB limit (killed)");
             }
+#if defined(__linux__) && !defined(__APPLE__)
+            }
+#endif
             if(std::chrono::steady_clock::now() - start>limits.timeout){
+#if defined(__linux__) && !defined(__APPLE__)
+                if (use_cgroup) { cg.kill_all(); cg.cleanup(); }
+#endif
                 kill(pid, SIGKILL);
                 waitpid(pid,&status,0);
                 return Result<void>::err("Timeout");
